@@ -22,8 +22,10 @@ import (
 
 	"go-stock/backend/events"
 	"go-stock/backend/logger"
+	"go-stock/backend/webauth"
 	"go-stock/backend/webcors"
 	"go-stock/backend/webdownload"
+	"go-stock/backend/webrpc"
 )
 
 type webServer struct {
@@ -49,7 +51,7 @@ type wsInbound struct {
 	Data any    `json:"data"`
 }
 
-func newWebServer(app *App, staticDir string) *webServer {
+func newWebServer(app *App, staticDir string, auth *webauth.Auth) *webServer {
 	s := &webServer{
 		app:       app,
 		staticDir: staticDir,
@@ -63,6 +65,9 @@ func newWebServer(app *App, staticDir string) *webServer {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/auth/login", auth.HandleLogin)
+	mux.HandleFunc("/api/auth/logout", auth.HandleLogout)
+	mux.HandleFunc("/api/auth/status", auth.HandleStatus)
 	mux.HandleFunc("/api/rpc", s.handleRPC)
 	mux.HandleFunc("/api/ws", s.handleWS)
 	mux.HandleFunc("/api/upload", s.handleUpload)
@@ -70,7 +75,7 @@ func newWebServer(app *App, staticDir string) *webServer {
 	mux.Handle("/", s.staticHandler())
 
 	s.http = &http.Server{
-		Handler:           webcors.Middleware(mux),
+		Handler:           webcors.Middleware(auth.Middleware(mux)),
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 	return s
@@ -99,8 +104,12 @@ func (s *webServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req rpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, rpcResponse{Error: "invalid json: " + err.Error()})
+		return
+	}
+	if !webrpc.Allowed(req.Method) {
+		writeJSON(w, http.StatusForbidden, rpcResponse{Error: "method not allowed"})
 		return
 	}
 	clientID := r.Header.Get("X-Client-Id")

@@ -86,23 +86,25 @@
 
 ### 🌐 网页版 / Docker
 
-网页版复用桌面 Vue 界面与后端 `App` API，通过 HTTP + WebSocket 提供服务（单用户、无登录，请勿把端口暴露到公网）。
+网页版复用桌面 Vue 界面与后端 `App` API，通过 HTTP + WebSocket 提供服务。默认只监听本机 `127.0.0.1:8080`，API（含 `GetConfig` 等）需访问口令；请勿把端口暴露到公网。
 
 ```bash
 # 本地编译
 chmod +x scripts/build-web.sh
 ./scripts/build-web.sh
 WEB_STATIC_DIR=frontend/dist ./build/bin/go-stock-web
-# 打开 http://127.0.0.1:8080
+# 打开 http://127.0.0.1:8080 ，用 data/.web_auth_token 中的口令登录
+# 或：WEB_AUTH_TOKEN='你的口令' WEB_STATIC_DIR=frontend/dist ./build/bin/go-stock-web
 ```
 
 ```bash
-# Docker Compose
+# Docker Compose（主机端口仅绑定 127.0.0.1）
+export WEB_AUTH_TOKEN='你的口令'   # 可选；不设则写入 data/.web_auth_token
 docker compose up -d --build
-# 打开 http://localhost:8080
+# 打开 http://127.0.0.1:8080
 ```
 
-数据目录通过卷持久化：`data/`（SQLite）、`memory/`、`skills/`、`logs/`。赞助码设备绑定依赖容器 `machine-id`，重建容器可能变化，必要时可挂载主机 `/etc/machine-id`。环境变量：`WEB_ADDR`（默认 `:8080`）、`WEB_STATIC_DIR`、`GO_STOCK_ROOT_DIR`、`TZ`。
+数据目录通过卷持久化：`data/`（SQLite）、`memory/`、`skills/`、`logs/`。赞助码设备绑定依赖容器 `machine-id`，重建容器可能变化，必要时可挂载主机 `/etc/machine-id`。环境变量：`WEB_ADDR`（默认 `127.0.0.1:8080`）、`WEB_AUTH_TOKEN`、`WEB_STATIC_DIR`、`GO_STOCK_ROOT_DIR`、`TZ`。容器内需监听 `:8080` 时由 compose 设置 `WEB_ADDR=:8080`，主机侧仍只映射本机回环。
 
 网页版不包含系统托盘、原生文件对话框、本机自动更新覆盖、Agent 本机 Shell；导入导出改为浏览器上传/下载。
 

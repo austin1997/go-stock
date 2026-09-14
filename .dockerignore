@@ -11,6 +11,7 @@ frontend/dist
 data/*.db*
 data/*.db-wal
 data/*.db-shm
+data/.web_auth_token
 logs
 memory
 skills

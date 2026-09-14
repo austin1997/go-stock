@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -15,6 +16,8 @@ import (
 	"go-stock/backend/db"
 	log "go-stock/backend/logger"
 	"go-stock/backend/machineid"
+	"go-stock/backend/webaddr"
+	"go-stock/backend/webauth"
 	"go-stock/backend/webmode"
 )
 
@@ -42,16 +45,28 @@ func main() {
 	app.startup(ctx)
 	app.domReady(ctx)
 
-	addr := os.Getenv("WEB_ADDR")
-	if addr == "" {
-		addr = ":8080"
-	}
+	addr := webaddr.FromEnv(os.Getenv("WEB_ADDR"))
 	staticDir := os.Getenv("WEB_STATIC_DIR")
 	if staticDir == "" {
 		staticDir = "frontend/dist"
 	}
 
-	srv := newWebServer(app, staticDir)
+	token, generated, err := webauth.ResolveToken("data/.web_auth_token")
+	if err != nil {
+		log.SugaredLogger.Fatalf("web auth token: %v", err)
+	}
+	if generated {
+		log.SugaredLogger.Info("网页访问口令已写入 data/.web_auth_token，打开页面后用该口令登录；也可用环境变量 WEB_AUTH_TOKEN 指定")
+	} else if strings.TrimSpace(os.Getenv("WEB_AUTH_TOKEN")) != "" {
+		log.SugaredLogger.Info("网页访问口令来自 WEB_AUTH_TOKEN")
+	} else {
+		log.SugaredLogger.Info("网页访问口令来自 data/.web_auth_token")
+	}
+	if !webaddr.IsLoopback(addr) {
+		log.SugaredLogger.Warn("WEB_ADDR 非本机回环，请确保仅受信网络可访问，且已设置访问口令")
+	}
+
+	srv := newWebServer(app, staticDir, webauth.New(token))
 	errCh := make(chan error, 1)
 	go func() {
 		log.SugaredLogger.Infof("go-stock web listening on %s", addr)
