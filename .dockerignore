@@ -1,0 +1,26 @@
+# Git
+.git
+.gitignore
+
+# Frontend deps / caches
+frontend/node_modules
+frontend/dist
+**/.vite
+
+# Runtime data
+data/*.db*
+data/*.db-wal
+data/*.db-shm
+logs
+memory
+skills
+*.exe
+*.log
+
+# IDE
+.idea
+.vscode
+.cursor
+
+# Build artifacts
+build/bin

@@ -7,11 +7,11 @@ import (
 	"time"
 
 	"github.com/duke-git/lancet/v2/convertor"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"go-stock/backend/agent/tools"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
+	"go-stock/backend/events"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
 )
@@ -182,7 +182,7 @@ func (a *App) sendPlanNotification(channels []string, title, content, plainConte
 		switch ch {
 		case NotifyChannelApp:
 			go data.NewAlertWindowsApi("go-stock操作计划预警", title, content, "").SendNotification()
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    title,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -199,7 +199,7 @@ func (a *App) sendPlanNotification(channels []string, title, content, plainConte
 		go data.NewAlertWindowsApi("go-stock操作计划预警", title, content, "").SendNotification()
 		go data.NewFeishuAPI().SendToFeishu(title, content)
 		go data.NewDingDingAPI().SendToDingDing(title, content)
-		go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+		go events.Emit(a.ctx, "newsPush", map[string]any{
 			"time":    title,
 			"isRed":   true,
 			"source":  "go-stock",

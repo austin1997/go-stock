@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"go-stock/backend/agent"
 	"go-stock/backend/data"
+	"go-stock/backend/events"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
 	"strings"
@@ -13,7 +14,6 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/duke-git/lancet/v2/convertor"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // @Author spark
@@ -359,9 +359,9 @@ func (a *App) ChatWithAgent(question string, aiConfigId int, sysPromptId *int, m
 	// 文本形式出现，模型用工具去 fetch 而非视觉识别），真正的图片解析位永远为空。
 	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, effectiveSysPromptId, memoryMode, memoryCount, thinkingMode, agentMode, skillPromptOverride, sessionId, "", skillQuestionBlock, strings.TrimSpace(imagesJSON))
 	for msg := range ch {
-		runtime.EventsEmit(a.ctx, "agent-message", agentMessageToFrontendMap(msg))
+		events.Emit(a.ctx, "agent-message", agentMessageToFrontendMap(msg))
 	}
-	runtime.EventsEmit(a.ctx, "agent-message", agentMessageToFrontendMap(&schema.Message{
+	events.Emit(a.ctx, "agent-message", agentMessageToFrontendMap(&schema.Message{
 		Role:    schema.Assistant,
 		Content: "agent-DONE",
 	}))
@@ -387,11 +387,11 @@ func (a *App) ChatWithAgentKBQA(question string, aiConfigId int, agentMode, hits
 	defer func() {
 		if r := recover(); r != nil {
 			logger.SugaredLogger.Errorf("ChatWithAgentKBQA panic: %v", r)
-			runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
+			events.Emit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
 				Role:    schema.Assistant,
 				Content: fmt.Sprintf("❌ 知识库问答异常: %v", r),
 			}))
-			runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
+			events.Emit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
 				Role:    schema.Assistant,
 				Content: "agent-DONE",
 			}))
@@ -425,9 +425,9 @@ func (a *App) ChatWithAgentKBQA(question string, aiConfigId int, agentMode, hits
 	// sysPromptId=nil（使用 override）, memoryMode=false, memoryCount=0, thinkingMode=false, sessionId=""
 	ch := agent.NewStockAiAgentApi().ChatWithContext(ctx, question, aiConfigId, nil, false, 0, false, agentMode, sysPromptOverride, "")
 	for msg := range ch {
-		runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(msg))
+		events.Emit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(msg))
 	}
-	runtime.EventsEmit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
+	events.Emit(a.ctx, "kb-qa-message", agentMessageToFrontendMap(&schema.Message{
 		Role:    schema.Assistant,
 		Content: "agent-DONE",
 	}))

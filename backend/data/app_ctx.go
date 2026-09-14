@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"go-stock/backend/events"
 )
 
 // @Author spark
@@ -35,5 +35,5 @@ func EmitStockDataChanged() {
 	if ctx == nil {
 		return
 	}
-	go runtime.EventsEmit(ctx, "stockDataChanged", "")
+	go events.Emit(ctx, "stockDataChanged", "")
 }

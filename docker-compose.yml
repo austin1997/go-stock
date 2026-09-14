@@ -1,0 +1,17 @@
+services:
+  go-stock-web:
+    build: .
+    image: go-stock-web:latest
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai
+      WEB_ADDR: ":8080"
+      WEB_STATIC_DIR: /app/frontend/dist
+      GO_STOCK_ROOT_DIR: /app
+    volumes:
+      - ./data:/app/data
+      - ./memory:/app/memory
+      - ./skills:/app/skills
+      - ./logs:/app/logs
+    restart: unless-stopped

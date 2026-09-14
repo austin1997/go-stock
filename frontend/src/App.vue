@@ -65,6 +65,7 @@ const telegraph = ref([])
 const groupList = ref([])
 const officialStatement= ref("")
 const marketStatus = ref('')
+const isWeb = import.meta.env.VITE_WEB === 'true'
 let marketStatusTimer = null
 
 const downloadState = ref({
@@ -1245,7 +1246,7 @@ const menuOptions = ref([
     show: true,
   },
   {
-    show:false,
+    show: isWeb,
     label: () => h("a", {
       href: '#',
       onClick: toggleFullscreen,
@@ -1270,6 +1271,7 @@ const menuOptions = ref([
     }, {default: () => '隐藏至托盘区'}),
     key: 'hide',
     icon: renderIcon(SlideHide24Filled),
+    show: !isWeb,
   },
   {
     label: () => h("a", {
@@ -1278,6 +1280,7 @@ const menuOptions = ref([
     }, {default: () => '退出程序'}),
     key: 'exit',
     icon: renderIcon(PowerOutline),
+    show: !isWeb,
   },
 ])
 

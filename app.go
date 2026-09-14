@@ -13,10 +13,13 @@ import (
 	"go-stock/backend/agent/tools"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
+	"go-stock/backend/events"
 	"go-stock/backend/logger"
 	"go-stock/backend/machineid"
 	"go-stock/backend/models"
 	"go-stock/backend/util"
+	"go-stock/backend/webdownload"
+	"go-stock/backend/webmode"
 	"io"
 	"os"
 	"path/filepath"
@@ -216,6 +219,9 @@ func (a *App) PromptPlazaRequest(method, apiBase, path string, query map[string]
 }
 
 func (a *App) QuitApp() {
+	if webmode.Enabled() {
+		return
+	}
 	if a.ctx != nil {
 		if a.cron != nil {
 			a.cron.Stop()
@@ -344,6 +350,13 @@ func (a *App) CheckUpdate(flag int) {
 		}
 	}
 
+	if webmode.Enabled() {
+		if releaseVersion.TagName != Version {
+			go events.Emit(a.ctx, "updateVersion", releaseVersion)
+		}
+		return
+	}
+
 	if releaseVersion.TagName != Version {
 		tag := &models.Tag{}
 		tagResp, tagErr := data.SharedHTTPClient.R().
@@ -426,7 +439,7 @@ func (a *App) CheckUpdate(flag int) {
 		sources = append(sources, downloadSource{mirrorDownloadUrl, "gh.927223.xyz"})
 
 		downloadID := fmt.Sprintf("update-%d", time.Now().UnixNano())
-		go runtime.EventsEmit(a.ctx, "updateDownloadStart", map[string]any{
+		go events.Emit(a.ctx, "updateDownloadStart", map[string]any{
 			"downloadId": downloadID,
 			"version":    releaseVersion.TagName,
 			"total":      totalSize,
@@ -439,7 +452,7 @@ func (a *App) CheckUpdate(flag int) {
 		tmpFile, err := os.CreateTemp("", "go-stock-update-*.tmp")
 		if err != nil {
 			logger.SugaredLogger.Errorf("create temp file error: %s", err.Error())
-			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+			go events.Emit(a.ctx, "updateDownloadFailed", map[string]any{
 				"downloadId": downloadID,
 				"version":    releaseVersion.TagName,
 				"error":      "无法创建临时文件: " + err.Error(),
@@ -459,7 +472,7 @@ func (a *App) CheckUpdate(flag int) {
 			err := a.downloadUpdate(src.url, tmpPath, totalSize, downloadID, src.proxy)
 			if err != nil {
 				logger.SugaredLogger.Warnf("download from %s error: %s, trying next...", src.url, err.Error())
-				go runtime.EventsEmit(a.ctx, "downloadProgress", map[string]any{
+				go events.Emit(a.ctx, "downloadProgress", map[string]any{
 					"downloadId":    downloadID,
 					"status":        "retrying",
 					"attempt":       i + 1,
@@ -478,7 +491,7 @@ func (a *App) CheckUpdate(flag int) {
 		}
 
 		if !downloadSuccess {
-			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+			go events.Emit(a.ctx, "updateDownloadFailed", map[string]any{
 				"downloadId": downloadID,
 				"version":    releaseVersion.TagName,
 				"error":      "所有下载源均失败",
@@ -490,7 +503,7 @@ func (a *App) CheckUpdate(flag int) {
 			return
 		}
 
-		go runtime.EventsEmit(a.ctx, "updateDownloadComplete", map[string]any{
+		go events.Emit(a.ctx, "updateDownloadComplete", map[string]any{
 			"downloadId": downloadID,
 			"version":    releaseVersion.TagName,
 		})
@@ -500,7 +513,7 @@ func (a *App) CheckUpdate(flag int) {
 		if IsMacOS() {
 			if err := ApplyMacUpdate(tmpPath); err != nil {
 				logger.SugaredLogger.Error("macOS 更新失败: ", err.Error())
-				go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+				go events.Emit(a.ctx, "updateDownloadFailed", map[string]any{
 					"downloadId": downloadID,
 					"version":    releaseVersion.TagName,
 					"error":      err.Error(),
@@ -511,7 +524,7 @@ func (a *App) CheckUpdate(flag int) {
 				})
 				return
 			}
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "新版本：" + releaseVersion.TagName,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -523,7 +536,7 @@ func (a *App) CheckUpdate(flag int) {
 		body, err := os.ReadFile(tmpPath)
 		if err != nil {
 			logger.SugaredLogger.Errorf("read downloaded file error: %s", err.Error())
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "新版本：" + releaseVersion.TagName,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -536,16 +549,16 @@ func (a *App) CheckUpdate(flag int) {
 		if err != nil {
 			logger.SugaredLogger.Error("更新失败: ", err.Error())
 			if !IsRunningAsAdmin() {
-				go runtime.EventsEmit(a.ctx, "updateNeedAdmin", map[string]any{
+				go events.Emit(a.ctx, "updateNeedAdmin", map[string]any{
 					"version": releaseVersion.TagName,
 					"message": commitMessage,
 				})
 			} else {
-				go runtime.EventsEmit(a.ctx, "updateVersion", releaseVersion)
+				go events.Emit(a.ctx, "updateVersion", releaseVersion)
 			}
 			return
 		} else {
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "新版本：" + releaseVersion.TagName,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -554,7 +567,7 @@ func (a *App) CheckUpdate(flag int) {
 		}
 	} else {
 		if flag == 1 {
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "当前版本：" + Version,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -570,7 +583,7 @@ func (a *App) CheckUpdate(flag int) {
 func (a *App) downloadUpdate(url string, tmpPath string, totalSize int64, downloadID string, proxy string) error {
 	return data.DownloadWithProgress(a.ctx, url, tmpPath, totalSize,
 		func(downloaded, total int64, percentage, currentSpeed, avgSpeed float64) {
-			go runtime.EventsEmit(a.ctx, "downloadProgress", map[string]any{
+			go events.Emit(a.ctx, "downloadProgress", map[string]any{
 				"downloadId": downloadID,
 				"downloaded": downloaded,
 				"total":      total,
@@ -741,22 +754,22 @@ func (a *App) domReady(ctx context.Context) {
 		// 增加延迟确保前端已准备好接收事件
 		go func() {
 			time.Sleep(2 * time.Second)
-			runtime.EventsEmit(a.ctx, "loadingMsg", "done")
+			events.Emit(a.ctx, "loadingMsg", "done")
 		}()
 	}()
 
 	//if stocksBin != nil && len(stocksBin) > 0 {
-	//	go runtime.EventsEmit(a.ctx, "loadingMsg", "检查A股基础信息...")
+	//	go events.Emit(a.ctx, "loadingMsg", "检查A股基础信息...")
 	//	go initStockData(a.ctx)
 	//}
 	//
 	//if stocksBinHK != nil && len(stocksBinHK) > 0 {
-	//	go runtime.EventsEmit(a.ctx, "loadingMsg", "检查港股基础信息...")
+	//	go events.Emit(a.ctx, "loadingMsg", "检查港股基础信息...")
 	//	go initStockDataHK(a.ctx)
 	//}
 	//
 	//if stocksBinUS != nil && len(stocksBinUS) > 0 {
-	//	go runtime.EventsEmit(a.ctx, "loadingMsg", "检查美股基础信息...")
+	//	go events.Emit(a.ctx, "loadingMsg", "检查美股基础信息...")
 	//	go initStockDataUS(a.ctx)
 	//}
 	updateBasicInfo()
@@ -803,7 +816,7 @@ func (a *App) domReady(ctx context.Context) {
 			if data.GetSettingConfig().EnablePushNews {
 				go a.NewsPush(news)
 			}
-			go runtime.EventsEmit(a.ctx, "newTelegraph", news)
+			go events.Emit(a.ctx, "newTelegraph", news)
 		})
 		if err != nil {
 			logger.SugaredLogger.Errorf("AddFunc error:%s", err.Error())
@@ -816,7 +829,7 @@ func (a *App) domReady(ctx context.Context) {
 			if data.GetSettingConfig().EnablePushNews {
 				go a.NewsPush(news)
 			}
-			go runtime.EventsEmit(a.ctx, "newSinaNews", news)
+			go events.Emit(a.ctx, "newSinaNews", news)
 		})
 		if err != nil {
 			logger.SugaredLogger.Errorf("AddFunc error:%s", err.Error())
@@ -829,7 +842,7 @@ func (a *App) domReady(ctx context.Context) {
 			if data.GetSettingConfig().EnablePushNews {
 				go a.NewsPush(news)
 			}
-			go runtime.EventsEmit(a.ctx, "tradingViewNews", news)
+			go events.Emit(a.ctx, "tradingViewNews", news)
 		})
 		if err != nil {
 			logger.SugaredLogger.Errorf("AddFunc error:%s", err.Error())
@@ -843,7 +856,7 @@ func (a *App) domReady(ctx context.Context) {
 		scrapePolicyNews := func() {
 			items := data.NewPolicyNewsApi().GetAllDeptPolicyNews(100)
 			logger.SugaredLogger.Infof("政策新闻后台抓取完成，共 %d 条", len(*items))
-			go runtime.EventsEmit(a.ctx, "policyNewsUpdated", len(*items))
+			go events.Emit(a.ctx, "policyNewsUpdated", len(*items))
 		}
 		// 启动 1 分钟后先抓一次（避开启动高峰）
 		time.Sleep(1 * time.Minute)
@@ -915,7 +928,7 @@ func (a *App) domReady(ctx context.Context) {
 		//	for range ticker.C {
 		//		telegraph := refreshTelegraphList()
 		//		if telegraph != nil {
-		//			go runtime.EventsEmit(a.ctx, "telegraph", telegraph)
+		//			go events.Emit(a.ctx, "telegraph", telegraph)
 		//		}
 		//	}
 		//
@@ -924,7 +937,7 @@ func (a *App) domReady(ctx context.Context) {
 		id, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", 60), func() {
 			telegraph := refreshTelegraphList()
 			if telegraph != nil {
-				go runtime.EventsEmit(a.ctx, "telegraph", telegraph)
+				go events.Emit(a.ctx, "telegraph", telegraph)
 			}
 		})
 		if err != nil {
@@ -933,7 +946,7 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("refreshTelegraphList", id)
 		}
 
-		go runtime.EventsEmit(a.ctx, "telegraph", refreshTelegraphList())
+		go events.Emit(a.ctx, "telegraph", refreshTelegraphList())
 	}
 	go MonitorStockPrices(a)
 	if config.EnableFund {
@@ -1007,7 +1020,7 @@ func (a *App) domReady(ctx context.Context) {
 	//go func() {
 	//	f := checkChromeOnWindows()
 	//	if !f {
-	//		go runtime.EventsEmit(a.ctx, "warnMsg", "谷歌浏览器未安装,ai分析功能可能无法使用")
+	//		go events.Emit(a.ctx, "warnMsg", "谷歌浏览器未安装,ai分析功能可能无法使用")
 	//	}
 	//}()
 
@@ -1015,7 +1028,7 @@ func (a *App) domReady(ctx context.Context) {
 	//go func() {
 	//	path, e := checkEdgeOnWindows()
 	//	if !e {
-	//		go runtime.EventsEmit(a.ctx, "warnMsg", "Edge浏览器未安装,ai分析功能可能无法使用")
+	//		go events.Emit(a.ctx, "warnMsg", "Edge浏览器未安装,ai分析功能可能无法使用")
 	//	} else {
 	//		logger.SugaredLogger.Infof("Edge浏览器已安装，路径为: %s", path)
 	//	}
@@ -1039,7 +1052,7 @@ func (a *App) domReady(ctx context.Context) {
 func syncAllStockInfo(ctx context.Context) {
 	defer PanicHandler()
 	defer func() {
-		go runtime.EventsEmit(ctx, "loadingMsg", "done")
+		go events.Emit(ctx, "loadingMsg", "done")
 	}()
 	db.Dao.Unscoped().Model(&models.AllStockInfo{}).Where("1=1").Delete(&models.AllStockInfo{})
 	for page := 1; page < 3; page++ {
@@ -1057,7 +1070,7 @@ func syncAllStockInfo(ctx context.Context) {
 func (a *App) CheckStockBaseInfo(ctx context.Context) {
 	defer PanicHandler()
 	defer func() {
-		go runtime.EventsEmit(ctx, "loadingMsg", "done")
+		go events.Emit(ctx, "loadingMsg", "done")
 	}()
 	stockBasics := &[]data.StockBasic{}
 	data.SharedHTTPClient.R().
@@ -1196,10 +1209,10 @@ func (a *App) NewsPush(news *[]models.Telegraph) {
 	for _, telegraph := range *news {
 		if onlyPushRed {
 			if telegraph.IsRed || strutil.ContainsAny(telegraph.Content, stockNames) {
-				go runtime.EventsEmit(a.ctx, "newsPush", telegraph)
+				go events.Emit(a.ctx, "newsPush", telegraph)
 			}
 		} else {
-			go runtime.EventsEmit(a.ctx, "newsPush", telegraph)
+			go events.Emit(a.ctx, "newsPush", telegraph)
 		}
 		//go data.NewAlertWindowsApi("go-stock", telegraph.Source+" "+telegraph.Time, telegraph.Content, string(icon)).SendNotification()
 		//}
@@ -1208,7 +1221,7 @@ func (a *App) NewsPush(news *[]models.Telegraph) {
 
 func (a *App) AddCronTask(follow data.FollowedStock) func() {
 	return func() {
-		go runtime.EventsEmit(a.ctx, "warnMsg", "开始自动分析"+follow.Name+"_"+follow.StockCode)
+		go events.Emit(a.ctx, "warnMsg", "开始自动分析"+follow.Name+"_"+follow.StockCode)
 		ai := data.NewDeepSeekOpenAi(a.ctx, follow.AiConfigId)
 		thinking := data.GetSettingConfig().GetAIConfigThinking(follow.AiConfigId)
 		msgs := ai.NewChatStream(follow.Name, follow.StockCode, "", nil, a.AiTools, thinking)
@@ -1232,7 +1245,7 @@ func (a *App) AddCronTask(follow data.FollowedStock) func() {
 		}
 
 		data.NewDeepSeekOpenAi(a.ctx, follow.AiConfigId).SaveAIResponseResult(follow.StockCode, follow.Name, res.String(), chatId, question)
-		go runtime.EventsEmit(a.ctx, "warnMsg", "AI分析完成："+follow.Name+"_"+follow.StockCode)
+		go events.Emit(a.ctx, "warnMsg", "AI分析完成："+follow.Name+"_"+follow.StockCode)
 
 	}
 }
@@ -1615,7 +1628,7 @@ func MonitorAiRecommendStockPrices(a *App) {
 					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
 					go data.NewDingDingAPI().SendToDingDing(title, content)
 					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1648,7 +1661,7 @@ func MonitorAiRecommendStockPrices(a *App) {
 					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
 					go data.NewDingDingAPI().SendToDingDing(title, content)
 					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1682,7 +1695,7 @@ func MonitorAiRecommendStockPrices(a *App) {
 					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
 					go data.NewDingDingAPI().SendToDingDing(title, content)
 					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1767,7 +1780,7 @@ func MonitorFollowedStockCostPrices(a *App) {
 					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
 					go data.NewDingDingAPI().SendToDingDing(title, content)
 					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1951,7 +1964,7 @@ func (a *App) shutdown(ctx context.Context) {
 	// 停止飞书应用机器人长连接
 	a.stopFeishuBotInternal()
 	// 记录当前窗口大小，供下次启动时还原
-	if a.ctx != nil {
+	if a.ctx != nil && !webmode.Enabled() {
 		if w, h := runtime.WindowGetSize(a.ctx); w > 0 && h > 0 {
 			cfg := data.GetSettingConfig()
 			cfg.WindowWidth = w
@@ -2045,7 +2058,7 @@ func (a *App) SendDingDingMessageByType(message string, stockCode string, msgTyp
 	db.Dao.Model(stockInfo).Where("code = ?", stockCode).First(stockInfo)
 	go data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
 
-	go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+	go events.Emit(a.ctx, "newsPush", map[string]any{
 		"time":    "📈 " + getMsgTypeName(msgType),
 		"isRed":   true,
 		"source":  "go-stock",
@@ -2094,7 +2107,7 @@ func (a *App) SendFeishuMessageByType(message string, stockCode string, msgType 
 	db.Dao.Model(stockInfo).Where("code = ?", stockCode).First(stockInfo)
 	go data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
 
-	go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+	go events.Emit(a.ctx, "newsPush", map[string]any{
 		"time":    "📈 " + getMsgTypeName(msgType),
 		"isRed":   true,
 		"source":  "go-stock",
@@ -2184,11 +2197,11 @@ func (a *App) NewChatStream(stock, stockCode, question string, aiConfigId int, s
 	defer func() {
 		if err := recover(); err != nil {
 			logger.SugaredLogger.Errorf("NewChatStream panic: %v", err)
-			runtime.EventsEmit(a.ctx, "newChatStream", map[string]any{
+			events.Emit(a.ctx, "newChatStream", map[string]any{
 				"code":    0,
 				"content": fmt.Sprintf("AI分析异常: %v", err),
 			})
-			runtime.EventsEmit(a.ctx, "newChatStream", "DONE")
+			events.Emit(a.ctx, "newChatStream", "DONE")
 		}
 	}()
 	var msgs <-chan map[string]any
@@ -2198,9 +2211,9 @@ func (a *App) NewChatStream(stock, stockCode, question string, aiConfigId int, s
 		msgs = data.NewDeepSeekOpenAi(a.ctx, aiConfigId).NewChatStream(stock, stockCode, question, sysPromptId, []data.Tool{}, think)
 	}
 	for msg := range msgs {
-		runtime.EventsEmit(a.ctx, "newChatStream", msg)
+		events.Emit(a.ctx, "newChatStream", msg)
 	}
-	runtime.EventsEmit(a.ctx, "newChatStream", "DONE")
+	events.Emit(a.ctx, "newChatStream", "DONE")
 }
 
 func (a *App) SaveAIResponseResult(stockCode, stockName, result, chatId, question string, aiConfigId int) {
@@ -2347,6 +2360,9 @@ func (a *App) GetConfig() *data.SettingConfig {
 
 func (a *App) ExportConfig() string {
 	config := data.NewSettingsApi().Export()
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat("config.json", []byte(config))
+	}
 	file, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:                "导出配置文件",
 		CanCreateDirectories: true,
@@ -2512,9 +2528,13 @@ func (a *App) SaveAsMarkdown(stockCode, stockName string) string {
 	res := data.NewDeepSeekOpenAi(a.ctx, 0).GetAIResponseResult(stockCode)
 	if res != nil && len(res.Content) > 100 {
 		analysisTime := res.CreatedAt.Format("2006-01-02_15_04_05")
+		filename := fmt.Sprintf("%s[%s]AI分析结果_%s.md", stockName, stockCode, analysisTime)
+		if webmode.Enabled() {
+			return webdownload.PutAndFormat(filename, []byte(res.Content))
+		}
 		file, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 			Title:           "保存为Markdown",
-			DefaultFilename: fmt.Sprintf("%s[%s]AI分析结果_%s.md", stockName, stockCode, analysisTime),
+			DefaultFilename: filename,
 			Filters: []runtime.FileFilter{
 				{
 					DisplayName: "Markdown",
@@ -3023,14 +3043,14 @@ func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int
 	}
 
 	for msg := range msgs {
-		runtime.EventsEmit(a.ctx, eventName, msg)
+		events.Emit(a.ctx, eventName, msg)
 	}
 
 	a.summaryMu.Lock()
 	a.summaryCancel = nil
 	a.summaryMu.Unlock()
 
-	runtime.EventsEmit(a.ctx, eventName, "DONE")
+	events.Emit(a.ctx, eventName, "DONE")
 }
 func (a *App) GetIndustryRank(sort string, cnt int) []any {
 	res := data.NewMarketNewsApi().GetIndustryRank(sort, cnt)
@@ -3057,6 +3077,10 @@ func (a *App) GetStockMoneyTrendByDay(stockCode string, days int) []map[string]a
 //	@receiver a
 //	@param url
 func (a *App) OpenURL(url string) {
+	if webmode.Enabled() {
+		events.Emit(a.ctx, "openURL", url)
+		return
+	}
 	runtime.BrowserOpenURL(a.ctx, url)
 }
 
@@ -3068,20 +3092,7 @@ func (a *App) OpenURL(url string) {
 //	@param base64Data
 //	@return error
 func (a *App) SaveImage(name, base64Data string) string {
-	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "保存图片",
-		DefaultFilename: name + "AI分析.png",
-		Filters: []runtime.FileFilter{
-			{
-				DisplayName: "PNG 图片",
-				Pattern:     "*.png",
-			},
-		},
-	})
-	if err != nil || filePath == "" {
-		return "文件路径,无法保存。"
-	}
-
+	filename := name + "AI分析.png"
 	base64Data = strings.ReplaceAll(base64Data, " ", "+")
 	base64Data = strings.ReplaceAll(base64Data, "\n", "")
 	base64Data = strings.ReplaceAll(base64Data, "\r", "")
@@ -3100,6 +3111,22 @@ func (a *App) SaveImage(name, base64Data string) string {
 	}
 	if err != nil {
 		return "文件内容异常,无法保存。" + err.Error()
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat(filename, decodeString)
+	}
+	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "保存图片",
+		DefaultFilename: filename,
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "PNG 图片",
+				Pattern:     "*.png",
+			},
+		},
+	})
+	if err != nil || filePath == "" {
+		return "文件路径,无法保存。"
 	}
 
 	err = os.WriteFile(filepath.Clean(filePath), decodeString, os.ModePerm)
@@ -3117,17 +3144,6 @@ func (a *App) SaveImage(name, base64Data string) string {
 //	@param base64Data
 //	@return error
 func (a *App) SaveWordFile(filename string, base64Data string) string {
-	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "保存 Word 文件",
-		DefaultFilename: filename,
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Word 文件", Pattern: "*.docx"},
-		},
-	})
-	if err != nil || filePath == "" {
-		return "文件路径,无法保存。"
-	}
-
 	base64Data = strings.ReplaceAll(base64Data, " ", "+")
 	base64Data = strings.ReplaceAll(base64Data, "\n", "")
 	base64Data = strings.ReplaceAll(base64Data, "\r", "")
@@ -3146,6 +3162,19 @@ func (a *App) SaveWordFile(filename string, base64Data string) string {
 	}
 	if err != nil {
 		return "文件内容异常,无法保存。" + err.Error()
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat(filename, decodeString)
+	}
+	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "保存 Word 文件",
+		DefaultFilename: filename,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Word 文件", Pattern: "*.docx"},
+		},
+	})
+	if err != nil || filePath == "" {
+		return "文件路径,无法保存。"
 	}
 	err = os.WriteFile(filepath.Clean(filePath), decodeString, 0777)
 	if err != nil {
@@ -3768,6 +3797,9 @@ func (a *App) DeleteTradingRecord(id uint) error {
 //   - *data.TradingRecordImportResult: 导入结果汇总
 //   - error: 错误信息
 func (a *App) ImportTradingRecordsFromExcel() (*data.TradingRecordImportResult, error) {
+	if webmode.Enabled() {
+		return nil, errors.New("请使用网页上传成交记录文件")
+	}
 	dialogOptions := runtime.OpenDialogOptions{
 		Title: "选择券商导出的成交记录文件",
 		Filters: []runtime.FileFilter{
@@ -3786,9 +3818,23 @@ func (a *App) ImportTradingRecordsFromExcel() (*data.TradingRecordImportResult, 
 	return data.NewStockDataApi().ImportTradingRecords(filePath)
 }
 
+func (a *App) ImportTradingRecordsFromPath(filePath string) (*data.TradingRecordImportResult, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return nil, errors.New("未选择文件")
+	}
+	return data.NewStockDataApi().ImportTradingRecords(filePath)
+}
+
 // ExportTradingRecordTemplate 弹出保存对话框，将交易记录导入模板保存为 Excel（.xlsx）文件。
 // 用户取消保存时返回空字符串，不报错。
 func (a *App) ExportTradingRecordTemplate() (string, error) {
+	xlsxData, err := data.NewStockDataApi().TradingRecordTemplateXLSX()
+	if err != nil {
+		return "", err
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat("交易记录导入模板.xlsx", xlsxData), nil
+	}
 	dialogOptions := runtime.SaveDialogOptions{
 		Title:           "保存交易记录导入模板",
 		DefaultFilename: "交易记录导入模板.xlsx",
@@ -3804,10 +3850,6 @@ func (a *App) ExportTradingRecordTemplate() (string, error) {
 		// 用户取消保存
 		return "", nil
 	}
-	xlsxData, err := data.NewStockDataApi().TradingRecordTemplateXLSX()
-	if err != nil {
-		return "", err
-	}
 	if err := os.WriteFile(filePath, xlsxData, 0644); err != nil {
 		return "", err
 	}
@@ -3820,6 +3862,13 @@ func (a *App) ExportTradingRecordTemplate() (string, error) {
 func (a *App) ExportTableToXLSX(defaultFileName string, table data.ExportTableData) (string, error) {
 	if defaultFileName == "" {
 		defaultFileName = "导出数据.xlsx"
+	}
+	xlsxData, err := data.NewStockDataApi().BuildTableXLSX(table)
+	if err != nil {
+		return "", err
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat(defaultFileName, xlsxData), nil
 	}
 	dialogOptions := runtime.SaveDialogOptions{
 		Title:           "导出为 Excel",
@@ -3835,10 +3884,6 @@ func (a *App) ExportTableToXLSX(defaultFileName string, table data.ExportTableDa
 	if filePath == "" {
 		// 用户取消保存
 		return "", nil
-	}
-	xlsxData, err := data.NewStockDataApi().BuildTableXLSX(table)
-	if err != nil {
-		return "", err
 	}
 	if err := os.WriteFile(filePath, xlsxData, 0644); err != nil {
 		return "", err
@@ -4031,6 +4076,9 @@ func (a *App) DeleteKBDocument(kbName, docID string) error {
 // 用于知识库文档上传场景：前端调用此方法获取路径后再调用 UploadKBFile。
 // 用户取消选择时返回空字符串。
 func (a *App) PickKBFilePath() (string, error) {
+	if webmode.Enabled() {
+		return "", errors.New("请使用网页选择文件")
+	}
 	dialogOptions := runtime.OpenDialogOptions{
 		Title: "选择知识库文档",
 		Filters: []runtime.FileFilter{
@@ -4045,6 +4093,9 @@ func (a *App) PickKBFilePath() (string, error) {
 // 用于知识库批量导入场景：前端调用此方法获取路径数组后再调用 UploadKBFiles。
 // 用户取消选择时返回空数组。
 func (a *App) PickKBFilePaths() ([]string, error) {
+	if webmode.Enabled() {
+		return nil, errors.New("请使用网页选择文件")
+	}
 	dialogOptions := runtime.OpenDialogOptions{
 		Title: "选择知识库文档（可多选）",
 		Filters: []runtime.FileFilter{
@@ -4261,6 +4312,10 @@ func (a *App) StartMCPOAuth(id uint) string {
 	}
 
 	// 拉起系统浏览器完成腾讯账号登录授权
+	if webmode.Enabled() {
+		events.Emit(a.ctx, "openURL", authURL)
+		return "请在浏览器中完成授权: " + authURL
+	}
 	if a.ctx != nil {
 		runtime.BrowserOpenURL(a.ctx, authURL)
 	}

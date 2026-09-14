@@ -7,7 +7,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"go-stock/backend/events"
 
 	"go-stock/backend/data"
 	"go-stock/backend/db"
@@ -342,7 +342,7 @@ func safeEventsEmit(ctx context.Context, event string, payload any) {
 				logger.SugaredLogger.Warnf("emit event %s panic recovered: %v", event, r)
 			}
 		}()
-		runtime.EventsEmit(ctx, event, payload)
+		events.Emit(ctx, event, payload)
 	}()
 }
 

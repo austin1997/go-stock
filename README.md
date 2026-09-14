@@ -84,6 +84,27 @@
 
 [//]: # (- MACOS安装版：[go-stock-darwin-universal.pkg]&#40;https://github.com/ArvinLovegood/go-stock/releases&#41;)
 
+### 🌐 网页版 / Docker
+
+网页版复用桌面 Vue 界面与后端 `App` API，通过 HTTP + WebSocket 提供服务（单用户、无登录，请勿把端口暴露到公网）。
+
+```bash
+# 本地编译
+chmod +x scripts/build-web.sh
+./scripts/build-web.sh
+WEB_STATIC_DIR=frontend/dist ./build/bin/go-stock-web
+# 打开 http://127.0.0.1:8080
+```
+
+```bash
+# Docker Compose
+docker compose up -d --build
+# 打开 http://localhost:8080
+```
+
+数据目录通过卷持久化：`data/`（SQLite）、`memory/`、`skills/`、`logs/`。赞助码设备绑定依赖容器 `machine-id`，重建容器可能变化，必要时可挂载主机 `/etc/machine-id`。环境变量：`WEB_ADDR`（默认 `:8080`）、`WEB_STATIC_DIR`、`GO_STOCK_ROOT_DIR`、`TZ`。
+
+网页版不包含系统托盘、原生文件对话框、本机自动更新覆盖、Agent 本机 Shell；导入导出改为浏览器上传/下载。
 
 ### 💬 支持大模型/平台
 | 模型 | 状态 | 备注                                                                                                                                                                                                                                                                |
