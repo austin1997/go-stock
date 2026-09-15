@@ -2,6 +2,7 @@ package data
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -40,6 +41,25 @@ func requestTimeout() time.Duration {
 	return 300 * time.Second
 }
 
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.cancel()
+	}
+	return n, err
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
 func (t *timeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return t.base.RoundTrip(req)
@@ -59,8 +79,17 @@ func (t *timeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 	}
 	ctx, cancel := context.WithTimeout(parent, d)
-	defer cancel()
-	return t.base.RoundTrip(req.WithContext(ctx))
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if resp.Body == nil || resp.Body == http.NoBody {
+		cancel()
+		return resp, nil
+	}
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
 }
 
 func init() {

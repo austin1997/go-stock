@@ -18,13 +18,35 @@ import (
 	"go-stock/backend/webauth"
 )
 
+var errUserDisabled = fmt.Errorf("账号已禁用")
+
 type userRuntime struct {
-	once   sync.Once
-	err    error
-	userID uint
-	app    *App
-	gdb    *gorm.DB
-	rt     *tenant.Runtime
+	once    sync.Once
+	mu      sync.Mutex
+	stopped bool
+	err     error
+	userID  uint
+	app     *App
+	gdb     *gorm.DB
+	rt      *tenant.Runtime
+}
+
+func (item *userRuntime) markStopped() {
+	item.mu.Lock()
+	item.stopped = true
+	item.mu.Unlock()
+}
+
+func (item *userRuntime) snapshot() (app *App, rt *tenant.Runtime, err error, stopped bool) {
+	item.mu.Lock()
+	defer item.mu.Unlock()
+	return item.app, item.rt, item.err, item.stopped
+}
+
+func (item *userRuntime) setErr(err error) {
+	item.mu.Lock()
+	item.err = err
+	item.mu.Unlock()
 }
 
 type runtimeManager struct {
@@ -46,9 +68,17 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 	m.mu.Unlock()
 
 	item.once.Do(func() {
+		item.mu.Lock()
+		stopped := item.stopped
+		item.mu.Unlock()
+		if stopped {
+			item.setErr(errUserDisabled)
+			return
+		}
+
 		prepared, err := prepareUserWorkspace(userID)
 		if err != nil {
-			item.err = err
+			item.setErr(err)
 			return
 		}
 		tenant.Bind(prepared.rt)
@@ -58,23 +88,37 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 		ctx := tenant.WithRuntime(context.Background(), prepared.rt)
 		app.startup(ctx)
 		app.domReady(ctx)
+
+		item.mu.Lock()
+		if item.stopped {
+			item.mu.Unlock()
+			app.StopBackground()
+			item.setErr(errUserDisabled)
+			return
+		}
+		item.app = app
+		item.gdb = prepared.gdb
+		item.rt = prepared.rt
+		item.mu.Unlock()
+
 		go func() {
 			tenant.Bind(prepared.rt)
 			defer tenant.Unbind()
 			_ = db.ClearExpiredStockTransactionCache()
 		}()
-		item.app = app
-		item.gdb = prepared.gdb
-		item.rt = prepared.rt
 		logger.SugaredLogger.Infof("user workspace ready: id=%d root=%s", userID, prepared.rt.Root)
 	})
-	if item.err != nil {
+	app, _, err, stopped := item.snapshot()
+	if err != nil || stopped || app == nil {
 		m.mu.Lock()
 		if m.items[userID] == item {
 			delete(m.items, userID)
 		}
 		m.mu.Unlock()
-		return nil, item.err
+		if err == nil {
+			err = errUserDisabled
+		}
+		return nil, err
 	}
 	return item, nil
 }
@@ -82,29 +126,49 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 func (m *runtimeManager) stop(userID uint) {
 	m.mu.Lock()
 	item := m.items[userID]
-	delete(m.items, userID)
+	if item != nil {
+		item.markStopped()
+		delete(m.items, userID)
+	}
 	m.mu.Unlock()
-	if item == nil || item.app == nil {
-		return
-	}
-	if item.rt != nil {
-		tenant.Bind(item.rt)
-		defer tenant.Unbind()
-	}
-	item.app.StopBackground()
+	m.halt(item, false, nil)
 }
 
 func (m *runtimeManager) shutdown(ctx context.Context) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	items := make([]*userRuntime, 0, len(m.items))
 	for _, item := range m.items {
-		if item == nil || item.app == nil {
-			continue
+		if item != nil {
+			item.markStopped()
 		}
-		tenant.Bind(item.rt)
-		item.app.StopBackground()
-		item.app.shutdown(ctx)
-		tenant.Unbind()
+		items = append(items, item)
+	}
+	m.items = map[uint]*userRuntime{}
+	m.mu.Unlock()
+	for _, item := range items {
+		m.halt(item, true, ctx)
+	}
+}
+
+func (m *runtimeManager) halt(item *userRuntime, shutdown bool, ctx context.Context) {
+	if item == nil {
+		return
+	}
+	item.markStopped()
+	item.once.Do(func() {
+		item.setErr(errUserDisabled)
+	})
+	app, rt, _, _ := item.snapshot()
+	if app == nil {
+		return
+	}
+	if rt != nil {
+		tenant.Bind(rt)
+		defer tenant.Unbind()
+	}
+	app.StopBackground()
+	if shutdown {
+		app.shutdown(ctx)
 	}
 }
 

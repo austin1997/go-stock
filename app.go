@@ -1107,7 +1107,7 @@ func (a *App) CheckStockBaseInfo(ctx context.Context) {
 		logger.SugaredLogger.Errorf("保存StockBasic股票基础信息失败:%s", err.Error())
 	}
 	// 全量覆盖完成后，用通达信即时数据对 A 股做增量校准（新股上市当天即可见）
-	go a.syncStockBasicFromTdx()
+	tenant.Go(func() { a.syncStockBasicFromTdx() })
 
 	//count := int64(0)
 	//db.Dao.Model(&data.StockBasic{}).Count(&count)
@@ -1168,7 +1168,7 @@ func (a *App) CheckStockBaseInfo(ctx context.Context) {
 		logger.SugaredLogger.Errorf("保存StockInfoUS股票基础信息失败:%s", err.Error())
 	}
 	// 港股/美股全量覆盖完成后，用通达信扩展行情即时数据做增量校准
-	go a.syncHKUSStockBasicFromTdx()
+	tenant.Go(func() { a.syncHKUSStockBasicFromTdx() })
 	//for _, stock := range *stockUSBasics {
 	//	stockInfo := &models.StockInfoUS{
 	//		Code:   stock.Code,
