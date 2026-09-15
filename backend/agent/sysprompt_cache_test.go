@@ -218,6 +218,30 @@ func TestEmbeddingCacheDifferentModels(t *testing.T) {
 	}
 }
 
+func TestEmbeddingCacheTenantIsolation(t *testing.T) {
+	InvalidateEmbeddingCache()
+	callCount := int64(0)
+	mockEmbedFunc := func(ctx context.Context, text string) ([]float32, error) {
+		atomic.AddInt64(&callCount, 1)
+		return []float32{float32(callCount)}, nil
+	}
+	wrapped := wrapEmbedFuncWithCache(mockEmbedFunc, "same-model")
+
+	tenant.Bind(&tenant.Runtime{UserID: 1})
+	if _, err := wrapped(context.Background(), "same text"); err != nil {
+		t.Fatal(err)
+	}
+	tenant.Unbind()
+	tenant.Bind(&tenant.Runtime{UserID: 2})
+	if _, err := wrapped(context.Background(), "same text"); err != nil {
+		t.Fatal(err)
+	}
+	tenant.Unbind()
+	if atomic.LoadInt64(&callCount) != 2 {
+		t.Fatalf("callCount=%d want 2", callCount)
+	}
+}
+
 // TestEmbeddingCacheEmptyText 验证空文本不缓存。
 func TestEmbeddingCacheEmptyText(t *testing.T) {
 	InvalidateEmbeddingCache()

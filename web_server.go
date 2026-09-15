@@ -31,6 +31,7 @@ import (
 const (
 	maxRPCBodyBytes    = 32 << 20
 	maxUploadBodyBytes = 64 << 20
+	maxWSMessageBytes  = 64 << 10
 )
 
 type webServer struct {
@@ -62,6 +63,7 @@ func newWebServer(staticDir string) *webServer {
 		methods:   map[string]reflect.Method{},
 		runtimes:  newRuntimeManager(),
 	}
+	webauth.AfterUserDisabled = s.runtimes.stop
 	t := reflect.TypeOf((*App)(nil))
 	for i := 0; i < t.NumMethod(); i++ {
 		m := t.Method(i)
@@ -297,8 +299,18 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	defer events.Default.Unsubscribe(c)
 	_ = item
 	for {
-		data, _, err := wsutil.ReadClientData(conn)
+		lr := &io.LimitedReader{R: conn, N: maxWSMessageBytes + 1}
+		rw := struct {
+			io.Reader
+			io.Writer
+		}{lr, conn}
+		data, _, err := wsutil.ReadClientData(rw)
 		if err != nil {
+			return
+		}
+		if lr.N <= 0 {
+			body := ws.NewCloseFrameBody(ws.StatusMessageTooBig, "message too big")
+			_ = wsutil.WriteServerMessage(conn, ws.OpClose, body)
 			return
 		}
 		if len(data) == 0 {
@@ -337,6 +349,10 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	dir := userUploadDir(u.ID)
+	if err := webauth.EnforceTmpQuota(dir, hdr.Size); err != nil {
+		writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": err.Error()})
+		return
+	}
 	name := fmt.Sprintf("%d_%s", time.Now().UnixNano(), filepath.Base(hdr.Filename))
 	name = strings.ReplaceAll(name, "..", "_")
 	dstPath := filepath.Join(dir, name)
@@ -349,6 +365,11 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(dst, file); err != nil {
 		_ = os.Remove(dstPath)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := webauth.EnforceTmpQuota(dir, 0); err != nil {
+		_ = os.Remove(dstPath)
+		writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": err.Error()})
 		return
 	}
 	abs, _ := filepath.Abs(dstPath)

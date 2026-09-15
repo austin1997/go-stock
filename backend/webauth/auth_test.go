@@ -95,3 +95,35 @@ func TestEnsureProvisionedRequiresAdminOrSetupSecret(t *testing.T) {
 		t.Fatal("bootstrapped instance should keep register closed")
 	}
 }
+
+func TestBootstrapAdminUpdatesExistingPassword(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WEB_SETUP_SECRET", "setup-secret")
+	t.Setenv("WEB_ADMIN_USER", "")
+	t.Setenv("WEB_ADMIN_PASSWORD", "")
+	if err := Init(filepath.Join(dir, "auth.db")); err != nil {
+		t.Fatal(err)
+	}
+	u, err := Register("alice", "oldpass1", "setup-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u.IsAdmin {
+		// first user is admin; demote to simulate a colliding non-admin name
+		if err := authDB.Model(u).Update("is_admin", false).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("WEB_ADMIN_USER", "alice")
+	t.Setenv("WEB_ADMIN_PASSWORD", "newpass1")
+	got, err := BootstrapAdminFromEnv()
+	if err != nil || got == nil || !got.IsAdmin {
+		t.Fatalf("bootstrap: %v %+v", err, got)
+	}
+	if _, err := Authenticate("alice", "oldpass1"); err != ErrInvalidCredentials {
+		t.Fatalf("old password should not work, got %v", err)
+	}
+	if _, err := Authenticate("alice", "newpass1"); err != nil {
+		t.Fatalf("new password should work: %v", err)
+	}
+}

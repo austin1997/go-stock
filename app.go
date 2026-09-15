@@ -1983,11 +1983,33 @@ func addStockFollowData(follow data.FollowedStock, stockData *data.StockInfo) {
 	}
 }
 
+// StopBackground 停止该用户运行时的 cron、Agent 与飞书机器人，供网页版禁用账号时调用。
+func (a *App) StopBackground() {
+	if a == nil {
+		return
+	}
+	if a.cron != nil {
+		a.cron.Stop()
+	}
+	a.agentMu.Lock()
+	if a.agentCancel != nil {
+		a.agentCancel()
+		a.agentCancel = nil
+	}
+	a.agentMu.Unlock()
+	a.summaryMu.Lock()
+	if a.summaryCancel != nil {
+		a.summaryCancel()
+		a.summaryCancel = nil
+	}
+	a.summaryMu.Unlock()
+	a.stopFeishuBotInternal()
+}
+
 // shutdown is called at application termination
 func (a *App) shutdown(ctx context.Context) {
 	defer PanicHandler()
-	// 停止飞书应用机器人长连接
-	a.stopFeishuBotInternal()
+	a.StopBackground()
 	// 记录当前窗口大小，供下次启动时还原
 	if a.ctx != nil && !webmode.Enabled() {
 		if w, h := runtime.WindowGetSize(a.ctx); w > 0 && h > 0 {

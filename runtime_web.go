@@ -79,6 +79,21 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 	return item, nil
 }
 
+func (m *runtimeManager) stop(userID uint) {
+	m.mu.Lock()
+	item := m.items[userID]
+	delete(m.items, userID)
+	m.mu.Unlock()
+	if item == nil || item.app == nil {
+		return
+	}
+	if item.rt != nil {
+		tenant.Bind(item.rt)
+		defer tenant.Unbind()
+	}
+	item.app.StopBackground()
+}
+
 func (m *runtimeManager) shutdown(ctx context.Context) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -87,6 +102,7 @@ func (m *runtimeManager) shutdown(ctx context.Context) {
 			continue
 		}
 		tenant.Bind(item.rt)
+		item.app.StopBackground()
 		item.app.shutdown(ctx)
 		tenant.Unbind()
 	}

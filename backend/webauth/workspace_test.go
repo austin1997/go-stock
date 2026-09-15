@@ -1,10 +1,12 @@
 package webauth
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestMigrateLegacyMovesWALSidecars(t *testing.T) {
@@ -130,5 +132,65 @@ func TestRegisterSerializesFirstAdmin(t *testing.T) {
 	}
 	if n != 1 {
 		t.Fatalf("expected one rejected racer, got %d errors", n)
+	}
+}
+
+func TestMigrateLegacyStopsWhenCopyFails(t *testing.T) {
+	old := authDB
+	authDB = nil
+	t.Cleanup(func() { authDB = old })
+
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.MkdirAll("data", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("data", "stock.db"), []byte("main"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll("memory", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blocked := filepath.Join("memory", "blocked.bin")
+	if err := os.WriteFile(blocked, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(blocked, 0); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(blocked, 0o644) })
+
+	err := MigrateLegacyIfNeeded(1)
+	if err == nil {
+		t.Fatal("expected memory copy failure")
+	}
+	if _, statErr := os.Stat(filepath.Join("data", "stock.db.migrated")); statErr == nil {
+		t.Fatal("marker must not be written after failed memory copy")
+	}
+}
+
+func TestEnforceTmpQuotaEvictsOldest(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < MaxUserTmpFiles; i++ {
+		p := filepath.Join(dir, fmt.Sprintf("%02d.txt", i))
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(p, time.Now().Add(-time.Duration(MaxUserTmpFiles-i)*time.Second), time.Now().Add(-time.Duration(MaxUserTmpFiles-i)*time.Second)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := EnforceTmpQuota(dir, 1); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != MaxUserTmpFiles-1 {
+		t.Fatalf("got %d files, want %d", len(entries), MaxUserTmpFiles-1)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "00.txt")); err == nil {
+		t.Fatal("oldest file should have been evicted")
 	}
 }

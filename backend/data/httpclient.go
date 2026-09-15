@@ -44,14 +44,21 @@ func (t *timeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 	if req == nil {
 		return t.base.RoundTrip(req)
 	}
-	if _, hasDeadline := req.Context().Deadline(); hasDeadline {
-		return t.base.RoundTrip(req)
-	}
 	d := requestTimeout()
 	if d <= 0 {
 		return t.base.RoundTrip(req)
 	}
-	ctx, cancel := context.WithTimeout(req.Context(), d)
+	parent := req.Context()
+	if webmode.Enabled() {
+		// 网页版忽略 Client.Timeout / SetTimeout 带来的进程级 deadline，
+		// 只按当前租户 CrawlTimeOut 限制，避免租户互相覆盖。
+		parent = context.WithoutCancel(parent)
+	} else if deadline, ok := parent.Deadline(); ok {
+		if rem := time.Until(deadline); rem > 0 && rem < d {
+			d = rem
+		}
+	}
+	ctx, cancel := context.WithTimeout(parent, d)
 	defer cancel()
 	return t.base.RoundTrip(req.WithContext(ctx))
 }

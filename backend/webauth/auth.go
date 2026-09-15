@@ -71,6 +71,9 @@ type PublicUser struct {
 var authDB *gorm.DB
 var registerMu sync.Mutex
 
+// AfterUserDisabled 在账号被禁用（或引导密码轮换）后回调，由网页运行时注册以停止该用户的 cron/监控。
+var AfterUserDisabled func(userID uint)
+
 func Init(sqlitePath string) error {
 	if sqlitePath == "" {
 		sqlitePath = "data/auth.db"
@@ -298,6 +301,9 @@ func SetDisabled(id uint, disabled bool) error {
 	if disabled {
 		authDB.Where("user_id = ?", id).Delete(&Session{})
 		events.Default.DisconnectUser(id)
+		if AfterUserDisabled != nil {
+			AfterUserDisabled(id)
+		}
 	}
 	return nil
 }
@@ -320,10 +326,20 @@ func BootstrapAdminFromEnv() (*User, error) {
 	u := &User{}
 	err := authDB.Where("username = ?", username).First(u).Error
 	if err == nil {
-		if !u.IsAdmin {
-			_ = authDB.Model(u).Update("is_admin", true)
-			u.IsAdmin = true
+		hash, herr := hashPassword(password)
+		if herr != nil {
+			return nil, herr
 		}
+		if err := authDB.Model(u).Updates(map[string]any{
+			"password_hash": hash,
+			"is_admin":      true,
+		}).Error; err != nil {
+			return nil, err
+		}
+		u.PasswordHash = hash
+		u.IsAdmin = true
+		authDB.Where("user_id = ?", u.ID).Delete(&Session{})
+		events.Default.DisconnectUser(u.ID)
 		_ = MigrateLegacyIfNeeded(u.ID)
 		return u, nil
 	}

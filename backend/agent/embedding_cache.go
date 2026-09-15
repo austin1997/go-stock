@@ -2,12 +2,14 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/philippgille/chromem-go"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 )
 
 // embedding 查询缓存：避免对相同 query 重复调用 embedding API。
@@ -17,7 +19,7 @@ import (
 // 此时 query 的 embedding 完全相同，重复调用 API 是浪费。
 //
 // 设计：
-//   - 缓存 key = modelKey + "\x00" + text，区分不同 embedding 模型
+//   - 缓存 key = tenantID + modelKey + text，避免网页版不同用户共用同一进程缓存
 //   - TTL = 1h（embedding 不随时间变化）
 //   - 容量限制 = 1000 条，超限时清空（简单策略，避免内存泄漏）
 //   - 返回 []float32 副本，避免调用方修改缓存内容
@@ -59,7 +61,7 @@ func wrapEmbedFuncWithCache(fn chromem.EmbeddingFunc, modelKey string) chromem.E
 			return fn(ctx, text)
 		}
 
-		cacheKey := modelKey + "\x00" + text
+		cacheKey := fmt.Sprintf("%d\x00%s\x00%s", tenant.UserID(), modelKey, text)
 
 		// 快路径：RLock 查缓存
 		embeddingCacheMu.RLock()

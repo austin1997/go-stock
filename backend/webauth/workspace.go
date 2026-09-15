@@ -5,8 +5,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"sync"
+	"time"
 )
 
 var migrateMu sync.Mutex
@@ -94,36 +96,44 @@ func MigrateLegacyIfNeeded(userID uint) error {
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	}
-	if _, err := os.Stat(legacyDB); err != nil {
+	if !ownsLegacyMigration(userID) {
 		return nil
 	}
-	if !ownsLegacyMigration(userID) {
+	dstDB := StockDBPath(userID)
+	_, legacyErr := os.Stat(legacyDB)
+	_, dstErr := os.Stat(dstDB)
+	if legacyErr != nil && dstErr != nil {
 		return nil
 	}
 	if err := EnsureWorkspaceDirs(userID); err != nil {
 		return err
 	}
-	dstDB := StockDBPath(userID)
-	if _, err := os.Stat(dstDB); err == nil {
-		_ = os.WriteFile(marker, []byte("1"), 0o644)
-		return nil
-	}
-	if err := migrateSQLiteFiles(legacyDB, dstDB); err != nil {
-		return fmt.Errorf("migrate stock.db: %w", err)
+	if legacyErr == nil && dstErr != nil {
+		if err := migrateSQLiteFiles(legacyDB, dstDB); err != nil {
+			return fmt.Errorf("migrate stock.db: %w", err)
+		}
 	}
 	if st, err := os.Stat("memory"); err == nil && st.IsDir() {
 		dst := filepath.Join(WorkspaceRoot(userID), "memory")
 		if dirEmpty(dst) {
-			_ = copyDir("memory", dst)
+			if err := copyDir("memory", dst); err != nil {
+				_ = os.RemoveAll(dst)
+				return fmt.Errorf("migrate memory: %w", err)
+			}
 		}
 	}
 	if st, err := os.Stat("skills"); err == nil && st.IsDir() {
 		dst := filepath.Join(WorkspaceRoot(userID), "skills")
 		if dirEmpty(dst) {
-			_ = copyDir("skills", dst)
+			if err := copyDir("skills", dst); err != nil {
+				_ = os.RemoveAll(dst)
+				return fmt.Errorf("migrate skills: %w", err)
+			}
 		}
 	}
-	_ = os.WriteFile(marker, []byte("1"), 0o644)
+	if err := os.WriteFile(marker, []byte("1"), 0o644); err != nil {
+		return fmt.Errorf("write migration marker: %w", err)
+	}
 	return nil
 }
 
@@ -195,4 +205,68 @@ func copyFile(src, dst string) error {
 	defer out.Close()
 	_, err = io.Copy(out, in)
 	return err
+}
+
+const (
+	MaxUserTmpBytes int64 = 256 << 20
+	MaxUserTmpFiles       = 40
+	UserTmpMaxAge         = 24 * time.Hour
+)
+
+type tmpFileInfo struct {
+	path string
+	mod  time.Time
+	size int64
+}
+
+// EnforceTmpQuota 清理过期上传文件，并在需要时淘汰最旧文件，为 incoming 字节腾出空间。
+func EnforceTmpQuota(dir string, incoming int64) error {
+	if incoming < 0 {
+		incoming = 0
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var files []tmpFileInfo
+	now := time.Now()
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		p := filepath.Join(dir, e.Name())
+		st, err := os.Lstat(p)
+		if err != nil || !st.Mode().IsRegular() {
+			continue
+		}
+		if UserTmpMaxAge > 0 && now.Sub(st.ModTime()) > UserTmpMaxAge {
+			_ = os.Remove(p)
+			continue
+		}
+		files = append(files, tmpFileInfo{path: p, mod: st.ModTime(), size: st.Size()})
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].mod.Before(files[j].mod)
+	})
+	var total int64
+	for _, f := range files {
+		total += f.size
+	}
+	i := 0
+	count := len(files)
+	if incoming > 0 {
+		count++
+	}
+	for i < len(files) && (total+incoming > MaxUserTmpBytes || count-i > MaxUserTmpFiles) {
+		_ = os.Remove(files[i].path)
+		total -= files[i].size
+		i++
+	}
+	if total+incoming > MaxUserTmpBytes {
+		return fmt.Errorf("上传目录已满，请删除旧文件后重试")
+	}
+	return nil
 }

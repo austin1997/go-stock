@@ -343,7 +343,7 @@ func getKBEmbedFuncFor(info *KnowledgeBaseInfo) chromem.EmbeddingFunc {
 		return wrapEmbedFuncWithCache(getKBEmbedFunc(), "default")
 	}
 	logger.SugaredLogger.Debugf("getKBEmbedFuncFor: KB %q 使用 %s", info.Name, summary)
-	// 用 AIConfigID + EmbeddingModel 作为缓存 key 前缀，区分不同模型（详见 embedding_cache.go）
+	// 用 AIConfigID + EmbeddingModel 作为缓存 key 前缀，wrapEmbedFuncWithCache 还会加上租户 ID
 	cacheKey := fmt.Sprintf("aic%d:%s", info.AIConfigID, info.EmbeddingModel)
 	return wrapEmbedFuncWithCache(embedFunc, cacheKey)
 }

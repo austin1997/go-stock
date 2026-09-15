@@ -22,6 +22,7 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 
 	"gorm.io/gorm"
 )
@@ -407,12 +408,17 @@ func (a *MCPServerApi) StartOAuth(ctx context.Context, id uint) (string, error) 
 		TokenURL:    as.TokenEndpoint,
 		CreatedAt:   time.Now(),
 	}
+	rt := tenant.Capture()
 
 	mux := http.NewServeMux()
 	srv := &http.Server{Handler: mux}
 	flow.Server = srv
 
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if rt != nil {
+			tenant.Bind(rt)
+			defer tenant.Unbind()
+		}
 		a.handleOAuthCallback(w, r, id, flow)
 	})
 
@@ -422,6 +428,10 @@ func (a *MCPServerApi) StartOAuth(ctx context.Context, id uint) (string, error) 
 	}()
 	go func() {
 		time.Sleep(3 * time.Minute)
+		if rt != nil {
+			tenant.Bind(rt)
+			defer tenant.Unbind()
+		}
 		oauthFlowMu.Lock()
 		if f, ok := oauthFlows[id]; ok && f == flow {
 			_ = srv.Close()
