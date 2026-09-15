@@ -109,7 +109,6 @@ ai-doc
 .qoder
 .idea/
 /data/*.db*
-/data/.web_auth_token
 ai-assistant-web/data/*.db*
 *.exe
 /build/bin/*

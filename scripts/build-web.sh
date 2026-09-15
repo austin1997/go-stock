@@ -29,7 +29,7 @@ CGO_ENABLED=0 go build -tags goweb -trimpath -ldflags "-s -w" -o build/bin/go-st
 echo "[3/3] 完成"
 echo "运行："
 echo "  WEB_STATIC_DIR=frontend/dist ./build/bin/go-stock-web"
-echo "然后打开 http://127.0.0.1:8080 ，使用 data/.web_auth_token 或 WEB_AUTH_TOKEN 登录"
+echo "然后打开 http://127.0.0.1:8080"
 echo
 echo "Docker："
 echo "  docker compose up -d --build"

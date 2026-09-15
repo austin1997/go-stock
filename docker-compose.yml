@@ -1,16 +1,14 @@
-# 主机端口仅绑定 127.0.0.1。访问口令用 WEB_AUTH_TOKEN，未设置则写入 ./data/.web_auth_token
 services:
   go-stock-web:
     build: .
     image: go-stock-web:latest
     ports:
-      - "127.0.0.1:8080:8080"
+      - "8080:8080"
     environment:
       TZ: Asia/Shanghai
       WEB_ADDR: ":8080"
       WEB_STATIC_DIR: /app/frontend/dist
       GO_STOCK_ROOT_DIR: /app
-      WEB_AUTH_TOKEN: ${WEB_AUTH_TOKEN:-}
     volumes:
       - ./data:/app/data
       - ./memory:/app/memory

@@ -55,7 +55,7 @@ func TestForeignOriginPreflightIsForbidden(t *testing.T) {
 	}
 }
 
-func TestLoopbackOriginAllowedWithCredentials(t *testing.T) {
+func TestLoopbackOriginAllowedWithoutCredentials(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/rpc", strings.NewReader(`{}`))
 	req.Host = "127.0.0.1:8080"
 	req.Header.Set("Origin", "http://localhost:5173")
@@ -70,8 +70,8 @@ func TestLoopbackOriginAllowedWithCredentials(t *testing.T) {
 	if got := rr.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:5173" {
 		t.Fatalf("Allow-Origin = %q", got)
 	}
-	if got := rr.Header().Get("Access-Control-Allow-Credentials"); got != "true" {
-		t.Fatalf("Allow-Credentials = %q, want true", got)
+	if got := rr.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Fatalf("Allow-Credentials = %q, want unset", got)
 	}
 }
 

@@ -3,7 +3,6 @@ import { getClientId } from './rpc.js'
 const listeners = new Map()
 let socket = null
 let reconnectTimer = null
-let started = false
 
 function dispatch(name, data) {
   const set = listeners.get(name)
@@ -21,20 +20,16 @@ function dispatch(name, data) {
 
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const q = `clientId=${encodeURIComponent(getClientId())}`
   const base = import.meta.env.VITE_API_BASE
   if (base) {
     const u = new URL(base, location.href)
     const wsProto = u.protocol === 'https:' ? 'wss:' : 'ws:'
-    return `${wsProto}//${u.host}/api/ws?${q}`
+    return `${wsProto}//${u.host}/api/ws?clientId=${encodeURIComponent(getClientId())}`
   }
-  return `${proto}//${location.host}/api/ws?${q}`
+  return `${proto}//${location.host}/api/ws?clientId=${encodeURIComponent(getClientId())}`
 }
 
 function connect() {
-  if (!started) {
-    return
-  }
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return
   }
@@ -77,24 +72,7 @@ function scheduleReconnect() {
   }, 2000)
 }
 
-export function ensureConnected() {
-  started = true
-  connect()
-}
-
-window.addEventListener('go-stock-web-authenticated', () => {
-  started = true
-  if (socket && socket.readyState === WebSocket.OPEN) {
-    return
-  }
-  try {
-    socket?.close()
-  } catch {
-    /* ignore */
-  }
-  socket = null
-  connect()
-})
+connect()
 
 function removeCallback(eventName, callback) {
   const set = listeners.get(eventName)

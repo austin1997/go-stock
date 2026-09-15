@@ -1,5 +1,3 @@
-import { ensureAuthenticated } from './web-auth.js'
-
 const clientId = (typeof crypto !== 'undefined' && crypto.randomUUID)
   ? crypto.randomUUID()
   : `web-${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -13,13 +11,6 @@ function apiOrigin() {
     return import.meta.env.VITE_API_BASE
   }
   return ''
-}
-
-function requestHeaders(extra = {}) {
-  return {
-    'X-Client-Id': clientId,
-    ...extra,
-  }
 }
 
 export function consumeDownloadToken(result) {
@@ -44,18 +35,15 @@ export function consumeDownloadToken(result) {
   return '已下载：' + filename
 }
 
-async function rpcOnce(method, args) {
+export async function rpc(method, ...args) {
   const res = await fetch(`${apiOrigin()}/api/rpc`, {
     method: 'POST',
-    credentials: 'include',
-    headers: requestHeaders({ 'Content-Type': 'application/json' }),
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Client-Id': clientId,
+    },
     body: JSON.stringify({ method, args }),
   })
-  if (res.status === 401) {
-    const err = new Error('unauthorized')
-    err.status = 401
-    throw err
-  }
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || `RPC HTTP ${res.status}`)
@@ -65,18 +53,6 @@ async function rpcOnce(method, args) {
     throw new Error(body.error)
   }
   return consumeDownloadToken(body ? body.result : undefined)
-}
-
-export async function rpc(method, ...args) {
-  try {
-    return await rpcOnce(method, args)
-  } catch (err) {
-    if (err && err.status === 401) {
-      await ensureAuthenticated({ force: true })
-      return rpcOnce(method, args)
-    }
-    throw err
-  }
 }
 
 export function pickFiles({ accept = '', multiple = false } = {}) {
@@ -104,14 +80,9 @@ export async function uploadFile(file) {
   form.append('file', file)
   const res = await fetch(`${apiOrigin()}/api/upload`, {
     method: 'POST',
-    credentials: 'include',
-    headers: requestHeaders(),
+    headers: { 'X-Client-Id': clientId },
     body: form,
   })
-  if (res.status === 401) {
-    await ensureAuthenticated({ force: true })
-    return uploadFile(file)
-  }
   const data = await res.json()
   if (!res.ok || data.error) {
     throw new Error(data.error || '上传失败')
