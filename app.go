@@ -3849,7 +3849,11 @@ func (a *App) ImportTradingRecordsFromPath(filePath string) (*data.TradingRecord
 	if strings.TrimSpace(filePath) == "" {
 		return nil, errors.New("未选择文件")
 	}
-	return data.NewStockDataApi().ImportTradingRecords(filePath)
+	resolved, err := agent.RestrictWebUploadPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return data.NewStockDataApi().ImportTradingRecords(resolved)
 }
 
 // ExportTradingRecordTemplate 弹出保存对话框，将交易记录导入模板保存为 Excel（.xlsx）文件。

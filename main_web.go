@@ -41,6 +41,9 @@ func main() {
 	} else if u != nil {
 		log.SugaredLogger.Infof("admin user ready: %s", u.Username)
 	}
+	if err := webauth.EnsureProvisioned(); err != nil {
+		log.SugaredLogger.Fatal(err)
+	}
 	data.InitAnalyzeSentiment()
 
 	log.SugaredLogger.Info("starting go-stock web...")

@@ -62,10 +62,10 @@ export async function login(username, password) {
   return body.user
 }
 
-export async function register(username, password) {
+export async function register(username, password, setupToken) {
   const res = await authFetch('/api/auth/register', {
     method: 'POST',
-    body: JSON.stringify({ username, password }),
+    body: JSON.stringify({ username, password, setupToken: setupToken || '' }),
   })
   if (!res.ok) {
     throw new Error(await readError(res))

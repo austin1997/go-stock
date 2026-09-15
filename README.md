@@ -88,25 +88,25 @@
 
 网页版复用桌面 Vue 界面与后端 `App` API，通过 HTTP + WebSocket 提供服务。支持多用户登录：每个账号有独立工作空间（自选股、设置、AI Provider、Agent 记忆与技能）。登录不是完整的公网加固，仍建议只在内网使用。
 
-首次启动若还没有账号，可在登录页注册，**第一人自动成为管理员**。之后默认关闭开放注册，由管理员在「用户管理」中创建账号；设置 `WEB_ALLOW_REGISTER=true` 可继续开放注册。也可用 `WEB_ADMIN_USER` / `WEB_ADMIN_PASSWORD` 预置管理员。
+首次启动必须预置管理员：设置 `WEB_ADMIN_USER` / `WEB_ADMIN_PASSWORD`，或设置一次性 `WEB_SETUP_SECRET` 后在登录页注册（第一人成为管理员）。未配置前进程会拒绝启动，避免空库被抢注。之后默认关闭开放注册，由管理员在「用户管理」中创建账号；设置 `WEB_ALLOW_REGISTER=true` 可继续开放注册。
 
 ```bash
 # 本地编译
 chmod +x scripts/build-web.sh
 ./scripts/build-web.sh
-WEB_STATIC_DIR=frontend/dist ./build/bin/go-stock-web
+WEB_ADMIN_USER=admin WEB_ADMIN_PASSWORD=change-me WEB_STATIC_DIR=frontend/dist ./build/bin/go-stock-web
 # 打开 http://127.0.0.1:8080
 ```
 
 ```bash
-# Docker Compose
+# Docker Compose（请先在 docker-compose.yml 中设置 WEB_ADMIN_USER/WEB_ADMIN_PASSWORD 或 WEB_SETUP_SECRET）
 docker compose up -d --build
 # 打开 http://localhost:8080
 ```
 
 数据目录通过卷持久化：`data/`（`auth.db` 账号、`users/{id}/` 每用户 SQLite 与 memory/skills）、以及可选的顶层 `memory/`、`skills/`、`logs/`（作为新用户技能模板或旧数据迁移来源）。从旧版单用户升级时，现有 `data/stock.db` 会在第一个账号创建时迁入该用户工作空间。赞助码设备绑定依赖容器 `machine-id`，重建容器可能变化，必要时可挂载主机 `/etc/machine-id`。
 
-环境变量：`WEB_ADDR`（默认 `:8080`）、`WEB_STATIC_DIR`、`GO_STOCK_ROOT_DIR`、`TZ`、`WEB_ALLOW_REGISTER`、`WEB_ADMIN_USER`、`WEB_ADMIN_PASSWORD`。
+环境变量：`WEB_ADDR`（默认 `:8080`）、`WEB_STATIC_DIR`、`GO_STOCK_ROOT_DIR`、`TZ`、`WEB_ALLOW_REGISTER`、`WEB_ADMIN_USER`、`WEB_ADMIN_PASSWORD`、`WEB_SETUP_SECRET`。
 
 网页版不包含系统托盘、原生文件对话框、本机自动更新覆盖、Agent 本机 Shell；导入导出改为浏览器上传/下载。
 

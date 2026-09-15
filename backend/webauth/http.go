@@ -28,8 +28,9 @@ func decodeAuthJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 }
 
 type loginBody struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username   string `json:"username"`
+	Password   string `json:"password"`
+	SetupToken string `json:"setupToken"`
 }
 
 type createUserBody struct {
@@ -127,7 +128,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		code = http.StatusForbidden
 	case errors.Is(err, ErrUserNotFound):
 		code = http.StatusNotFound
-	case errors.Is(err, ErrRegisterClosed):
+	case errors.Is(err, ErrRegisterClosed), errors.Is(err, ErrInvalidSetupToken):
 		code = http.StatusForbidden
 	case errors.Is(err, ErrUserExists):
 		code = http.StatusConflict
@@ -137,8 +138,9 @@ func writeAuthError(w http.ResponseWriter, err error) {
 
 func HandleStatus(w http.ResponseWriter, _ *http.Request) {
 	writeAuthJSON(w, http.StatusOK, map[string]any{
-		"allowRegister": AllowRegister(),
-		"hasUsers":      HasUsers(),
+		"allowRegister":     AllowRegister(),
+		"hasUsers":          HasUsers(),
+		"requireSetupToken": RequireSetupToken(),
 	})
 }
 
@@ -151,7 +153,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 	if !decodeAuthJSON(w, r, &body) {
 		return
 	}
-	u, err := Register(body.Username, body.Password)
+	u, err := Register(body.Username, body.Password, body.SetupToken)
 	if err != nil {
 		writeAuthError(w, err)
 		return

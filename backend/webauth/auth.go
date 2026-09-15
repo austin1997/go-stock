@@ -2,6 +2,7 @@ package webauth
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"errors"
 	"os"
@@ -31,6 +32,7 @@ var (
 	ErrUserDisabled       = errors.New("账号已禁用")
 	ErrUserExists         = errors.New("用户名已存在")
 	ErrRegisterClosed     = errors.New("未开放注册，请联系管理员创建账号")
+	ErrInvalidSetupToken  = errors.New("需要有效的初始化密钥")
 	ErrInvalidUsername    = errors.New("用户名为 3-32 位字母、数字或下划线")
 	ErrInvalidPassword    = errors.New("密码长度为 6-100 位")
 	ErrUnauthorized       = errors.New("未登录")
@@ -97,9 +99,30 @@ func UserCount() int64 {
 	return n
 }
 
+func SetupSecret() string {
+	return strings.TrimSpace(os.Getenv("WEB_SETUP_SECRET"))
+}
+
+func RequireSetupToken() bool {
+	return !HasUsers() && SetupSecret() != ""
+}
+
+func setupTokenOK(got string) bool {
+	want := SetupSecret()
+	if want == "" {
+		return false
+	}
+	got = strings.TrimSpace(got)
+	if len(got) != len(want) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(got), []byte(want)) == 1
+}
+
 func AllowRegister() bool {
 	if !HasUsers() {
-		return true
+		// 空库不允许公开抢注管理员，必须先配置 WEB_ADMIN_* 或 WEB_SETUP_SECRET。
+		return SetupSecret() != ""
 	}
 	v := strings.TrimSpace(os.Getenv("WEB_ALLOW_REGISTER"))
 	return v == "1" || strings.EqualFold(v, "true") || strings.EqualFold(v, "yes")
@@ -164,13 +187,16 @@ func CreateUser(username, password string, isAdmin bool) (*User, error) {
 	return u, nil
 }
 
-func Register(username, password string) (*User, error) {
+func Register(username, password, setupToken string) (*User, error) {
 	registerMu.Lock()
 	defer registerMu.Unlock()
 	if !AllowRegister() {
 		return nil, ErrRegisterClosed
 	}
 	first := !HasUsers()
+	if first && !setupTokenOK(setupToken) {
+		return nil, ErrInvalidSetupToken
+	}
 	u, err := CreateUser(username, password, first)
 	if err != nil {
 		return nil, err
@@ -310,4 +336,15 @@ func BootstrapAdminFromEnv() (*User, error) {
 	}
 	_ = MigrateLegacyIfNeeded(u.ID)
 	return u, nil
+}
+
+// EnsureProvisioned 空库时必须已预置管理员，或配置了首次注册用的 WEB_SETUP_SECRET。
+func EnsureProvisioned() error {
+	if HasUsers() {
+		return nil
+	}
+	if SetupSecret() != "" {
+		return nil
+	}
+	return errors.New("未配置初始管理员：请设置 WEB_ADMIN_USER 和 WEB_ADMIN_PASSWORD，或设置 WEB_SETUP_SECRET 供首次注册使用")
 }

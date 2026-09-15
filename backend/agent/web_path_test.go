@@ -43,6 +43,17 @@ func TestRestrictWebUploadPath(t *testing.T) {
 	if _, err := restrictWebUploadPath(filepath.Join(upload, "..", "secret.env")); err == nil {
 		t.Fatal("escaped path should be rejected")
 	}
+
+	link := filepath.Join(upload, "link.md")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restrictWebUploadPath(link); err == nil {
+		t.Fatal("symlink should be rejected")
+	}
+	if _, err := restrictWebUploadPath(upload); err == nil {
+		t.Fatal("directory should be rejected")
+	}
 }
 
 func TestCurrentUserKeyUsesWebTenant(t *testing.T) {

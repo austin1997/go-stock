@@ -45,10 +45,11 @@ func TestMigrateLegacyOnlyFirstUser(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	t.Setenv("WEB_ALLOW_REGISTER", "")
+	t.Setenv("WEB_SETUP_SECRET", "setup-secret")
 	if err := Init(filepath.Join(dir, "auth.db")); err != nil {
 		t.Fatal(err)
 	}
-	first, err := Register("alice", "secret1")
+	first, err := Register("alice", "secret1", "setup-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,6 +88,7 @@ func TestRegisterSerializesFirstAdmin(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	t.Setenv("WEB_ALLOW_REGISTER", "")
+	t.Setenv("WEB_SETUP_SECRET", "setup-secret")
 	if err := Init(filepath.Join(dir, "auth.db")); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +102,7 @@ func TestRegisterSerializesFirstAdmin(t *testing.T) {
 		_ = i
 		go func() {
 			defer wg.Done()
-			u, err := Register(name, "secret1")
+			u, err := Register(name, "secret1", "setup-secret")
 			if err != nil {
 				errs <- err
 				return

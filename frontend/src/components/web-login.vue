@@ -8,16 +8,18 @@ const route = useRoute()
 const message = useMessage()
 const tab = ref('login')
 const allowRegister = ref(false)
+const requireSetupToken = ref(false)
 const loading = ref(false)
 
 const loginForm = reactive({ username: '', password: '' })
-const registerForm = reactive({ username: '', password: '', confirm: '' })
+const registerForm = reactive({ username: '', password: '', confirm: '', setupToken: '' })
 
 onMounted(async () => {
   try {
     const st = await fetchAuthStatus()
     allowRegister.value = !!st.allowRegister
-    if (!st.hasUsers) {
+    requireSetupToken.value = !!st.requireSetupToken
+    if (!st.hasUsers && st.allowRegister) {
       tab.value = 'register'
     }
   } catch {
@@ -57,7 +59,7 @@ async function onRegister() {
   }
   loading.value = true
   try {
-    await register(registerForm.username, registerForm.password)
+    await register(registerForm.username, registerForm.password, registerForm.setupToken)
     redirectAfterAuth()
   } catch (e) {
     message.error(e.message || '注册失败')
@@ -85,6 +87,10 @@ async function onRegister() {
         </n-tab-pane>
         <n-tab-pane v-if="allowRegister" name="register" tab="注册">
           <n-form @submit.prevent="onRegister">
+            <n-form-item v-if="requireSetupToken" label="初始化密钥">
+              <n-input v-model:value="registerForm.setupToken" type="password" show-password-on="click"
+                       placeholder="WEB_SETUP_SECRET"/>
+            </n-form-item>
             <n-form-item label="用户名">
               <n-input v-model:value="registerForm.username" placeholder="3-32 位字母数字或下划线"/>
             </n-form-item>
@@ -100,7 +106,7 @@ async function onRegister() {
           </n-form>
         </n-tab-pane>
       </n-tabs>
-      <p class="hint">每个账号有独立的自选股、AI 配置和工作空间。请勿将服务暴露到公网。</p>
+      <p class="hint">每个账号有独立的自选股、AI 配置和工作空间。首次部署请设置 WEB_ADMIN_USER/WEB_ADMIN_PASSWORD 或 WEB_SETUP_SECRET，请勿将服务暴露到公网。</p>
     </n-card>
   </div>
 </template>

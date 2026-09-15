@@ -3310,6 +3310,47 @@ type TradingRecordImportResult struct {
 	Message  string `json:"message"`  // 汇总提示
 }
 
+const maxTradingImportBytes int64 = 16 << 20
+
+func readCappedRegularFile(path string, maxBytes int64) ([]byte, error) {
+	if maxBytes <= 0 {
+		return nil, fmt.Errorf("无效的文件大小上限")
+	}
+	lfi, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if lfi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("不支持符号链接")
+	}
+	if !lfi.Mode().IsRegular() {
+		return nil, fmt.Errorf("不是普通文件")
+	}
+	if lfi.Size() > maxBytes {
+		return nil, fmt.Errorf("文件过大（超过 %d 字节）", maxBytes)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("不是普通文件")
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("文件过大（超过 %d 字节）", maxBytes)
+	}
+	return data, nil
+}
+
 // parseTradingImportFile 解析券商导出的成交记录文件。
 // 支持三类内容：
 //  1. 真正的 .xlsx 文件（zip 格式，经 excelize 解析）
@@ -3319,7 +3360,7 @@ type TradingRecordImportResult struct {
 // 表头行定位：扫描前 10 行找到含「成交日期」列的行作为表头（兼容文件头带说明行的情况），
 // 返回以表头名为 key 的原始数据行数组。
 func parseTradingImportFile(filePath string) ([]map[string]string, error) {
-	data, err := os.ReadFile(filePath)
+	data, err := readCappedRegularFile(filePath, maxTradingImportBytes)
 	if err != nil {
 		return nil, err
 	}

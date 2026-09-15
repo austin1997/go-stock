@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -19,6 +20,10 @@ func scopedName(name string) string {
 
 func graphKey(name string) string {
 	return scopedName(name)
+}
+
+func RestrictWebUploadPath(filePath string) (string, error) {
+	return restrictWebUploadPath(filePath)
 }
 
 func restrictWebUploadPath(filePath string) (string, error) {
@@ -44,11 +49,15 @@ func restrictWebUploadPath(filePath string) (string, error) {
 	if !pathUnderDir(absFile, absDir) {
 		return "", fmt.Errorf("文件路径不在允许的上传目录内")
 	}
-	if resolved, err := filepath.EvalSymlinks(absFile); err == nil {
-		absFile = resolved
-		if !pathUnderDir(absFile, absDir) {
-			return "", fmt.Errorf("文件路径不在允许的上传目录内")
-		}
+	fi, err := os.Lstat(absFile)
+	if err != nil {
+		return "", err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("不支持符号链接")
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("不是普通文件")
 	}
 	return absFile, nil
 }
