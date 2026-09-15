@@ -9,6 +9,7 @@ import (
 
 	"go-stock/backend/data"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 )
 
 // 本文件实现 sysPrompt 的分层缓存，目标是减少每轮 ChatWithContext 的拼装开销：
@@ -312,11 +313,20 @@ func getMarketStatusShortTTL() string {
 }
 
 // =====================================================================
-// DB 查询缓存：PromptTemplate
+// DB 查询缓存：PromptTemplate（key 含 tenant.UserID，避免网页版各库自增 ID 碰撞）
 // =====================================================================
 
+type promptTemplateKey struct {
+	tenant uint
+	id     int
+}
+
+func currentPromptTemplateKey(id int) promptTemplateKey {
+	return promptTemplateKey{tenant: tenant.UserID(), id: id}
+}
+
 var (
-	promptTemplateCache   = make(map[int]promptTemplateEntry)
+	promptTemplateCache   = make(map[promptTemplateKey]promptTemplateEntry)
 	promptTemplateCacheMu sync.RWMutex
 )
 
@@ -339,8 +349,10 @@ func getCachedPromptTemplate(id int) string {
 		return data.NewPromptTemplateApi().GetPromptTemplateByID(id)
 	}
 
+	key := currentPromptTemplateKey(id)
+
 	promptTemplateCacheMu.RLock()
-	if e, ok := promptTemplateCache[id]; ok && time.Since(e.loadedAt) < promptTemplateTTL {
+	if e, ok := promptTemplateCache[key]; ok && time.Since(e.loadedAt) < promptTemplateTTL {
 		promptTemplateCacheMu.RUnlock()
 		return e.content
 	}
@@ -349,7 +361,7 @@ func getCachedPromptTemplate(id int) string {
 	content := data.NewPromptTemplateApi().GetPromptTemplateByID(id)
 
 	promptTemplateCacheMu.Lock()
-	promptTemplateCache[id] = promptTemplateEntry{
+	promptTemplateCache[key] = promptTemplateEntry{
 		content:  content,
 		tokens:   estimateTokens(content),
 		loadedAt: time.Now(),
@@ -370,8 +382,10 @@ func getCachedPromptTemplateWithTokens(id int) (string, int) {
 		return s, estimateTokens(s)
 	}
 
+	key := currentPromptTemplateKey(id)
+
 	promptTemplateCacheMu.RLock()
-	if e, ok := promptTemplateCache[id]; ok && time.Since(e.loadedAt) < promptTemplateTTL {
+	if e, ok := promptTemplateCache[key]; ok && time.Since(e.loadedAt) < promptTemplateTTL {
 		promptTemplateCacheMu.RUnlock()
 		return e.content, e.tokens
 	}
@@ -381,7 +395,7 @@ func getCachedPromptTemplateWithTokens(id int) (string, int) {
 	tokens := estimateTokens(content)
 
 	promptTemplateCacheMu.Lock()
-	promptTemplateCache[id] = promptTemplateEntry{
+	promptTemplateCache[key] = promptTemplateEntry{
 		content:  content,
 		tokens:   tokens,
 		loadedAt: time.Now(),
@@ -395,14 +409,14 @@ func getCachedPromptTemplateWithTokens(id int) (string, int) {
 // 在用户编辑/删除模板后调用。
 func InvalidatePromptTemplateCache(id int) {
 	promptTemplateCacheMu.Lock()
-	delete(promptTemplateCache, id)
+	delete(promptTemplateCache, currentPromptTemplateKey(id))
 	promptTemplateCacheMu.Unlock()
 }
 
 // InvalidateAllPromptTemplateCache 失效所有模板缓存。
 func InvalidateAllPromptTemplateCache() {
 	promptTemplateCacheMu.Lock()
-	promptTemplateCache = make(map[int]promptTemplateEntry)
+	promptTemplateCache = make(map[promptTemplateKey]promptTemplateEntry)
 	promptTemplateCacheMu.Unlock()
 }
 

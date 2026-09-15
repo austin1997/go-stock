@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go-stock/backend/tenant"
 )
 
 // TestFileContentCacheHitAndMiss 验证文件级 mtime 缓存的命中/未命中。
@@ -377,5 +379,23 @@ func TestGetStaticXPrompt(t *testing.T) {
 	th, thTokens := getStaticThinkingPrompt()
 	if th == "" || thTokens <= 0 {
 		t.Error("getStaticThinkingPrompt should return non-empty string and positive tokens")
+	}
+}
+
+func TestPromptTemplateCacheKeyTenantIsolation(t *testing.T) {
+	tenant.Bind(&tenant.Runtime{UserID: 1})
+	k1 := currentPromptTemplateKey(42)
+	tenant.Unbind()
+	tenant.Bind(&tenant.Runtime{UserID: 2})
+	k2 := currentPromptTemplateKey(42)
+	tenant.Unbind()
+	if k1 == k2 {
+		t.Fatal("same template id must not share a cache key across tenants")
+	}
+	if k1.id != 42 || k2.id != 42 {
+		t.Fatalf("id should be preserved: %+v %+v", k1, k2)
+	}
+	if k1.tenant != 1 || k2.tenant != 2 {
+		t.Fatalf("tenant should differ: %+v %+v", k1, k2)
 	}
 }

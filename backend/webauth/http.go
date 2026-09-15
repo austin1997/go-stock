@@ -4,12 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 )
+
+const maxAuthJSONBytes int64 = 16 << 10
+
+func decodeAuthJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r.Body == nil {
+		writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return false
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthJSONBytes)
+	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+		writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return false
+	}
+	return true
+}
 
 type loginBody struct {
 	Username string `json:"username"`
@@ -132,8 +148,7 @@ func HandleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body loginBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+	if !decodeAuthJSON(w, r, &body) {
 		return
 	}
 	u, err := Register(body.Username, body.Password)
@@ -155,7 +170,9 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthJSONBytes)
 	if !loginLimiter.Allow(clientIP(r)) {
+		_, _ = io.Copy(io.Discard, r.Body)
 		writeAuthJSON(w, http.StatusTooManyRequests, map[string]any{"error": "登录尝试过多，请稍后再试"})
 		return
 	}
@@ -235,8 +252,7 @@ func HandleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var body createUserBody
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		if !decodeAuthJSON(w, r, &body) {
 			return
 		}
 		u, err := CreateUser(body.Username, body.Password, body.IsAdmin)
@@ -272,8 +288,7 @@ func HandleUserDisabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body disabledBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+	if !decodeAuthJSON(w, r, &body) {
 		return
 	}
 	if err := SetDisabled(uint(id64), body.Disabled); err != nil {

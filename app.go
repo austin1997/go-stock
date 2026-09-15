@@ -174,7 +174,7 @@ func (a *App) CheckDeviceBinding(token string, apiBase string) map[string]any {
 // 规避 macOS WKWebView 的 App Transport Security 对明文 HTTP 的限制，
 // 前端不应直接 fetch 远程广场接口。
 // method: GET/POST/PUT/DELETE
-// apiBase: 广场 API 根地址，如 http://go-stock.sparkmemory.top:1918/api
+// apiBase: 保留以兼容前端签名，实际固定为官方广场地址，不信任调用方提交的 URL
 // path: 接口路径，如 /auth/register
 // query: URL 查询参数，可为 nil；nil 值与空字符串会被跳过，与前端原 fetch 行为一致
 // body: 请求体 JSON 字符串，可为空
@@ -182,12 +182,22 @@ func (a *App) CheckDeviceBinding(token string, apiBase string) map[string]any {
 // 返回响应体解析后的 map（含 code/message/data），网络或解析失败时 code != 0。
 func (a *App) PromptPlazaRequest(method, apiBase, path string, query map[string]any, body, token string) map[string]any {
 	result := map[string]any{"code": -1, "message": "", "data": nil}
-	if apiBase == "" {
-		result["message"] = "apiBase 为空"
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if !data.PlazaHTTPMethodAllowed(method) {
+		result["message"] = "method not allowed"
 		return result
 	}
-	url := strings.TrimRight(apiBase, "/") + path
-	req := data.SharedHTTPClient.R().SetHeader("Content-Type", "application/json")
+	url, err := data.ResolvePlazaProxyURL(path)
+	if err != nil {
+		result["message"] = err.Error()
+		return result
+	}
+	const maxPlazaBody = 1 << 20
+	if len(body) > maxPlazaBody {
+		result["message"] = "request body too large"
+		return result
+	}
+	req := data.PlazaHTTPClient().R().SetHeader("Content-Type", "application/json")
 	if token != "" {
 		req = req.SetHeader("Authorization", "Bearer "+token)
 	}
@@ -1638,9 +1648,9 @@ func MonitorAiRecommendStockPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n建议买入价: %.2f-%.2f",
 					aiStock.StockName, aiStock.StockCode, currentPrice, aiStock.RecommendBuyPriceMin, aiStock.RecommendBuyPriceMax)
 				if a.canSendAlert(buyAlertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
 					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
@@ -1671,9 +1681,9 @@ func MonitorAiRecommendStockPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n建议止盈价: %.2f-%.2f",
 					aiStock.StockName, aiStock.StockCode, currentPrice, aiStock.RecommendStopProfitPriceMin, aiStock.RecommendStopProfitPriceMax)
 				if a.canSendAlert(profitAlertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
 					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
@@ -1705,9 +1715,9 @@ func MonitorAiRecommendStockPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n建议止损价: %s",
 					aiStock.StockName, aiStock.StockCode, currentPrice, aiStock.RecommendStopLossPrice)
 				if a.canSendAlert(stopLossAlertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
 					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
@@ -1790,9 +1800,9 @@ func MonitorFollowedStockCostPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n成本价: %.2f\n亏损: %.2f%%",
 					followedStock.Name, followedStock.StockCode, currentPrice, costPrice, dropPercent)
 				if a.canSendAlert(alertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
 					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
@@ -2071,7 +2081,9 @@ func (a *App) SendDingDingMessageByType(message string, stockCode string, msgTyp
 	}
 	stockInfo := &data.StockInfo{}
 	db.Dao.Model(stockInfo).Where("code = ?", stockCode).First(stockInfo)
-	go data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	tenant.Go(func() {
+		data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	})
 
 	go events.Emit(a.ctx, "newsPush", map[string]any{
 		"time":    "📈 " + getMsgTypeName(msgType),
@@ -2120,7 +2132,9 @@ func (a *App) SendFeishuMessageByType(message string, stockCode string, msgType 
 	}
 	stockInfo := &data.StockInfo{}
 	db.Dao.Model(stockInfo).Where("code = ?", stockCode).First(stockInfo)
-	go data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	tenant.Go(func() {
+		data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	})
 
 	go events.Emit(a.ctx, "newsPush", map[string]any{
 		"time":    "📈 " + getMsgTypeName(msgType),

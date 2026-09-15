@@ -13,6 +13,7 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 )
 
 // DailyReviewApi 每日自动复盘 API
@@ -443,13 +444,13 @@ func pushReportExternal(title, content string, pushFeishu, pushDingDing bool) {
 		if utf8.RuneCountInString(msg) > 3000 {
 			msg = string([]rune(msg)[:3000]) + "\n\n...(内容过长已截断，完整报告请查看软件)"
 		}
-		go data.NewFeishuAPI().SendToFeishu(title, msg)
+		tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, msg) })
 	}
 	if pushDingDing {
 		msg := content
 		if utf8.RuneCountInString(msg) > 3000 {
 			msg = string([]rune(msg)[:3000])
 		}
-		go data.NewDingDingAPI().SendToDingDing(title, msg)
+		tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, msg) })
 	}
 }
