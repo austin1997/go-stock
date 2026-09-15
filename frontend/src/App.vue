@@ -28,10 +28,13 @@ import {
   StarOutline,
   StatsChartOutline,
   Wallet, WarningOutline, TimeOutline, SearchOutline, BookmarkOutline,
+  PersonOutline, PeopleOutline, LogOutOutline,
 } from '@vicons/ionicons5'
 import {AnalyzeSentiment, GetConfig, GetEffectiveSponsorVip, GetGroupList, GetVersionInfo, IsTradingTime, IsHKTradingTime, IsUSTradingTime} from "../wailsjs/go/main/App";
 import FloatingAiAssistant from "./components/FloatingAiAssistant.vue";
 import FloatingAgentAssistant from "./components/FloatingAgentAssistant.vue";
+import {getCachedUser, setCachedUser} from "./router/router";
+import {logout as webLogout} from "./platform/auth.js";
 import {Dragon, Fire, FirefoxBrowser, Gripfire, Robot} from "@vicons/fa";
 import {Prompt, ReportAnalytics, ReportMoney, ReportSearch, TrendingUp} from "@vicons/tabler";
 import {LocalFireDepartmentRound} from "@vicons/material";
@@ -66,6 +69,7 @@ const groupList = ref([])
 const officialStatement= ref("")
 const marketStatus = ref('')
 const isWeb = import.meta.env.VITE_WEB === 'true'
+const webUser = ref(getCachedUser())
 let marketStatusTimer = null
 
 const downloadState = ref({
@@ -139,8 +143,35 @@ const investmentMottos = [
 ]
 const currentMotto = ref(investmentMottos[Math.floor(Math.random() * investmentMottos.length)])
 
-function refreshMotto() {
-  currentMotto.value = investmentMottos[Math.floor(Math.random() * investmentMottos.length)]
+function startWebEvents() {
+  if (!isWeb) return
+  import('../wailsjs/runtime').then((rt) => {
+    rt.startEventSocket?.()
+  })
+}
+
+function stopWebEvents() {
+  if (!isWeb) return
+  import('../wailsjs/runtime').then((rt) => {
+    rt.stopEventSocket?.()
+  })
+}
+
+async function onWebLogout() {
+  stopWebEvents()
+  try {
+    await webLogout()
+  } catch {
+    /* ignore */
+  }
+  setCachedUser(null)
+  webUser.value = null
+  window.location.hash = '#/login'
+  window.location.reload()
+}
+
+function isLoginRoute() {
+  return isWeb && route.name === 'login'
 }
 
 function updateMarketStatus() {
@@ -1247,6 +1278,33 @@ const menuOptions = ref([
   },
   {
     show: isWeb,
+    label: () => webUser.value ? (webUser.value.username || '用户') : '用户',
+    key: 'webAccount',
+    icon: renderIcon(PersonOutline),
+    children: [
+      {
+        show: true,
+        label: () =>
+            h(
+                RouterLink,
+                {
+                  to: { name: 'users' },
+                  onClick: () => { activeKey.value = 'users' },
+                },
+                { default: () => '用户管理' }
+            ),
+        key: 'users',
+        icon: renderIcon(PeopleOutline),
+      },
+      {
+        label: () => h('a', { href: '#', onClick: onWebLogout }, { default: () => '退出登录' }),
+        key: 'webLogout',
+        icon: renderIcon(LogOutOutline),
+      },
+    ],
+  },
+  {
+    show: isWeb,
     label: () => h("a", {
       href: '#',
       onClick: toggleFullscreen,
@@ -1416,6 +1474,12 @@ window.onerror = function (msg, source, lineno, colno, error) {
 };
 
 onBeforeMount(() => {
+  if (isLoginRoute()) {
+    loading.value = false
+    return
+  }
+  webUser.value = getCachedUser()
+  startWebEvents()
   GetVersionInfo().then(result => {
     if(result.officialStatement){
       content.value = result.officialStatement+"\n\n"+content.value
@@ -1465,6 +1529,10 @@ onBeforeMount(() => {
 })
 
 onMounted(() => {
+  if (isLoginRoute()) {
+    loading.value = false
+    return
+  }
   updateMarketStatus()
   marketStatusTimer = setInterval(() => {
     refreshMotto()
@@ -1649,7 +1717,7 @@ onMounted(() => {
                 :rotate="-15"
             >
 <!--              <FloatingAiAssistant />-->
-              <FloatingAgentAssistant />
+              <FloatingAgentAssistant v-if="!isLoginRoute()" />
               <n-flex>
                 <n-grid x-gap="12" :cols="1">
                   <n-gi>
@@ -1664,12 +1732,12 @@ onMounted(() => {
                         </n-tag>
                       </n-marquee>
                       <n-scrollbar :style="contentStyle">
-                        <n-skeleton v-if="loading" height="calc(100vh)" />
+                        <n-skeleton v-if="loading && !isLoginRoute()" height="calc(100vh)" />
                         <RouterView/>
                       </n-scrollbar>
                     </n-spin>
                   </n-gi>
-                  <n-gi style="position: fixed;bottom:0;z-index: 9;width: 100%;">
+                  <n-gi v-if="!isLoginRoute()" style="position: fixed;bottom:0;z-index: 9;width: 100%;">
                     <n-card size="small" style="--wails-draggable:no-drag">
                       <n-menu style="font-size: 18px;"
                               v-model:value="activeKey"

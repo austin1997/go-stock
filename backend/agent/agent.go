@@ -9,6 +9,7 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 	"go-stock/backend/webmode"
 	"io"
 	"os"
@@ -584,6 +585,9 @@ func (w *nonFatalSummaryMiddleware) BeforeModelRewriteState(
 // 都会得到一致的沙箱根。若获取可执行文件路径失败，降级到当前工作目录。
 // 可通过环境变量 GO_STOCK_ROOT_DIR 覆盖（用于测试或指定部署目录）。
 func deepAgentRootDir() string {
+	if root := tenant.Root(); root != "" {
+		return root
+	}
 	if env := strings.TrimSpace(os.Getenv("GO_STOCK_ROOT_DIR")); env != "" {
 		return env
 	}

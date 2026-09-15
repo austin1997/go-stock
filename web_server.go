@@ -22,15 +22,17 @@ import (
 
 	"go-stock/backend/events"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
+	"go-stock/backend/webauth"
 	"go-stock/backend/webcors"
 	"go-stock/backend/webdownload"
 )
 
 type webServer struct {
-	app       *App
 	http      *http.Server
 	staticDir string
 	methods   map[string]reflect.Method
+	runtimes  *runtimeManager
 }
 
 type rpcRequest struct {
@@ -49,13 +51,13 @@ type wsInbound struct {
 	Data any    `json:"data"`
 }
 
-func newWebServer(app *App, staticDir string) *webServer {
+func newWebServer(staticDir string) *webServer {
 	s := &webServer{
-		app:       app,
 		staticDir: staticDir,
 		methods:   map[string]reflect.Method{},
+		runtimes:  newRuntimeManager(),
 	}
-	t := reflect.TypeOf(app)
+	t := reflect.TypeOf((*App)(nil))
 	for i := 0; i < t.NumMethod(); i++ {
 		m := t.Method(i)
 		s.methods[m.Name] = m
@@ -63,10 +65,17 @@ func newWebServer(app *App, staticDir string) *webServer {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
-	mux.HandleFunc("/api/rpc", s.handleRPC)
-	mux.HandleFunc("/api/ws", s.handleWS)
-	mux.HandleFunc("/api/upload", s.handleUpload)
-	mux.HandleFunc("/api/download/", s.handleDownload)
+	mux.HandleFunc("/api/auth/status", webauth.HandleStatus)
+	mux.HandleFunc("/api/auth/register", webauth.HandleRegister)
+	mux.HandleFunc("/api/auth/login", webauth.HandleLogin)
+	mux.HandleFunc("/api/auth/logout", webauth.HandleLogout)
+	mux.HandleFunc("/api/auth/me", webauth.HandleMe)
+	mux.HandleFunc("/api/auth/users", webauth.HandleUsers)
+	mux.HandleFunc("/api/auth/users/", webauth.HandleUserDisabled)
+	mux.HandleFunc("/api/rpc", s.withAuth(s.handleRPC))
+	mux.HandleFunc("/api/ws", s.withAuth(s.handleWS))
+	mux.HandleFunc("/api/upload", s.withAuth(s.handleUpload))
+	mux.HandleFunc("/api/download/", s.withAuth(s.handleDownload))
 	mux.Handle("/", s.staticHandler())
 
 	s.http = &http.Server{
@@ -82,7 +91,19 @@ func (s *webServer) ListenAndServe(addr string) error {
 }
 
 func (s *webServer) Shutdown(ctx context.Context) error {
+	s.runtimes.shutdown(ctx)
 	return s.http.Shutdown(ctx)
+}
+
+func (s *webServer) withAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		u, err := webauth.CurrentUser(r)
+		if err != nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "未登录"})
+			return
+		}
+		next(w, r.WithContext(webauth.WithUser(r.Context(), u)))
+	}
 }
 
 func (s *webServer) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -98,13 +119,19 @@ func (s *webServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	u := webauth.UserFromRequest(r)
+	item, err := s.runtimes.get(u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, rpcResponse{Error: "workspace: " + err.Error()})
+		return
+	}
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, rpcResponse{Error: "invalid json: " + err.Error()})
 		return
 	}
 	clientID := r.Header.Get("X-Client-Id")
-	result, err := s.invoke(clientID, req.Method, req.Args)
+	result, err := s.invoke(item, clientID, req.Method, req.Args)
 	if err != nil {
 		writeJSON(w, http.StatusOK, rpcResponse{Error: err.Error()})
 		return
@@ -112,19 +139,20 @@ func (s *webServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rpcResponse{Result: result})
 }
 
-func (s *webServer) invoke(clientID, method string, rawArgs []json.RawMessage) (any, error) {
+func (s *webServer) invoke(item *userRuntime, clientID, method string, rawArgs []json.RawMessage) (any, error) {
 	m, ok := s.methods[method]
 	if !ok {
 		return nil, fmt.Errorf("unknown method: %s", method)
 	}
+	tenant.Bind(item.rt)
+	defer tenant.Unbind()
 	events.PushCaller(clientID)
 	defer events.PopCaller()
 
 	in := make([]reflect.Value, 0, m.Type.NumIn())
-	in = append(in, reflect.ValueOf(s.app))
+	in = append(in, reflect.ValueOf(item.app))
 	need := m.Type.NumIn() - 1
 	if len(rawArgs) < need {
-		// pad with zero values
 		padded := make([]json.RawMessage, need)
 		copy(padded, rawArgs)
 		for i := len(rawArgs); i < need; i++ {
@@ -202,6 +230,12 @@ func exportValue(v reflect.Value) any {
 }
 
 func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
+	u := webauth.UserFromRequest(r)
+	item, err := s.runtimes.get(u.ID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	clientID := r.URL.Query().Get("clientId")
 	if clientID == "" {
 		clientID = uuid.NewString()
@@ -212,7 +246,7 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c := events.Default.Subscribe(clientID)
+	c := events.Default.SubscribeUser(clientID, u.ID)
 	var writeMu sync.Mutex
 	write := func(v any) error {
 		b, err := json.Marshal(v)
@@ -236,6 +270,7 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	defer events.Default.Unsubscribe(c)
+	_ = item
 	for {
 		data, _, err := wsutil.ReadClientData(conn)
 		if err != nil {
@@ -264,6 +299,7 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	u := webauth.UserFromRequest(r)
 	if err := r.ParseMultipartForm(64 << 20); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -274,8 +310,7 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	dir := filepath.Join("data", "tmp")
-	_ = os.MkdirAll(dir, 0o755)
+	dir := userUploadDir(u.ID)
 	name := fmt.Sprintf("%d_%s", time.Now().UnixNano(), filepath.Base(hdr.Filename))
 	name = strings.ReplaceAll(name, "..", "_")
 	dstPath := filepath.Join(dir, name)

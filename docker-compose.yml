@@ -9,6 +9,9 @@ services:
       WEB_ADDR: ":8080"
       WEB_STATIC_DIR: /app/frontend/dist
       GO_STOCK_ROOT_DIR: /app
+      # WEB_ALLOW_REGISTER: "true"
+      # WEB_ADMIN_USER: admin
+      # WEB_ADMIN_PASSWORD: change-me
     volumes:
       - ./data:/app/data
       - ./memory:/app/memory

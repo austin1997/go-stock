@@ -28,7 +28,11 @@ func sqliteDSN(path string) string {
 	if strings.Contains(path, "_pragma=") {
 		return path // 调用方已自带参数，尊重原样
 	}
-	return path + "?_pragma=busy_timeout(10000)" +
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "_pragma=busy_timeout(10000)" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=synchronous(NORMAL)" +
 		"&_pragma=cache_size(-131072)" + // 每连接页缓存上限 128MB（池扩容后按连接摊薄）
@@ -37,8 +41,8 @@ func sqliteDSN(path string) string {
 		"&_pragma=wal_autocheckpoint(2000)" // WAL 超过约 8MB 才自动 checkpoint，降低交易时段高频写的卡顿
 }
 
-func Init(sqlitePath string) {
-	dbLogger := logger.New(
+func gormLogger() logger.Interface {
+	return logger.New(
 		log.New(os.Stdout, "\r\n", log.LstdFlags),
 		logger.Config{
 			SlowThreshold:             time.Second * 3,
@@ -48,15 +52,17 @@ func Init(sqlitePath string) {
 			LogLevel:                  logger.Silent,
 		},
 	)
+}
+
+func openDB(sqlitePath string, prepareStmt bool) (*gorm.DB, error) {
 	openDb, err := gorm.Open(sqlite.New(sqlite.Config{DriverName: "sqlite", DSN: sqliteDSN(sqlitePath)}), &gorm.Config{
-		Logger:                                   dbLogger,
+		Logger:                                   gormLogger(),
 		DisableForeignKeyConstraintWhenMigrating: true,
 		SkipDefaultTransaction:                   true,
-		PrepareStmt:                              true,
+		PrepareStmt:                              prepareStmt,
 	})
-
 	if err != nil {
-		log.Fatalf("db connection error is %s", err.Error())
+		return nil, err
 	}
 
 	// 兜底：确保 busy_timeout / WAL / synchronous 生效（DSN 参数未生效时的保险）
@@ -66,7 +72,7 @@ func Init(sqlitePath string) {
 
 	dbCon, err := openDb.DB()
 	if err != nil {
-		log.Fatalf("openDb.DB error is  %s", err.Error())
+		return nil, err
 	}
 	// WAL 模式下读不阻塞写、写不阻塞读，多个连接可并发读
 	// （板块/概念资金流向页一次并发拉取 40+ 条曲线）；写者由 busy_timeout 串行等待。
@@ -76,8 +82,34 @@ func Init(sqlitePath string) {
 	// SQLite 为嵌入式库，连接无服务端状态可刷新，不设生命周期可避免
 	// 周期性换连接后 database/sql 内部按连接缓存的预编译语句全部作废重建
 	dbCon.SetConnMaxLifetime(0)
+	return openDb, nil
+}
+
+func Init(sqlitePath string) {
+	openDb, err := openDB(sqlitePath, true)
+	if err != nil {
+		log.Fatalf("db connection error is %s", err.Error())
+	}
 	Dao = openDb
 	AutoMigrate()
 	// 启动时异步清理过期缓存（保留最近 1 天），避免数据库无限增长
 	go ClearExpiredStockTransactionCache()
+}
+
+// Open 打开独立 SQLite（不改全局 Dao）。用于网页版每用户工作空间和 auth.db。
+func Open(sqlitePath string) (*gorm.DB, error) {
+	return openDB(sqlitePath, true)
+}
+
+// InitTenantShell 网页版入口：全局 Dao 仅作 ConnPool 切换壳，真实数据在 Bind 后的用户库。
+func InitTenantShell(shellPath string) {
+	if shellPath == "" {
+		shellPath = "data/.web_shell.db"
+	}
+	openDb, err := openDB(shellPath, false)
+	if err != nil {
+		log.Fatalf("tenant shell db error is %s", err.Error())
+	}
+	wrapSwitchingConnPool(openDb)
+	Dao = openDb
 }

@@ -38,12 +38,19 @@ export function consumeDownloadToken(result) {
 export async function rpc(method, ...args) {
   const res = await fetch(`${apiOrigin()}/api/rpc`, {
     method: 'POST',
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       'X-Client-Id': clientId,
     },
     body: JSON.stringify({ method, args }),
   })
+  if (res.status === 401) {
+    if (!location.hash.includes('/login')) {
+      location.hash = '#/login'
+    }
+    throw new Error('未登录')
+  }
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || `RPC HTTP ${res.status}`)
@@ -80,6 +87,7 @@ export async function uploadFile(file) {
   form.append('file', file)
   const res = await fetch(`${apiOrigin()}/api/upload`, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'X-Client-Id': clientId },
     body: form,
   })

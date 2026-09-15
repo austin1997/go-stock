@@ -15,6 +15,7 @@ import (
 	"go-stock/backend/db"
 	log "go-stock/backend/logger"
 	"go-stock/backend/machineid"
+	"go-stock/backend/webauth"
 	"go-stock/backend/webmode"
 )
 
@@ -23,6 +24,7 @@ func main() {
 
 	checkDir("data")
 	checkDir("data/tmp")
+	checkDir("data/users")
 	checkDir("logs")
 	checkDir("memory")
 	checkDir("skills")
@@ -30,17 +32,19 @@ func main() {
 	machineid.Init(BuildKey)
 	data.SponsorDecryptKeyHex = BuildKey
 	data.SetAppIcon(icon)
-	db.Init("")
+	db.InitTenantShell("data/.web_shell.db")
+	if err := webauth.Init("data/auth.db"); err != nil {
+		log.SugaredLogger.Fatalf("auth db: %v", err)
+	}
+	if u, err := webauth.BootstrapAdminFromEnv(); err != nil {
+		log.SugaredLogger.Fatalf("bootstrap admin: %v", err)
+	} else if u != nil {
+		log.SugaredLogger.Infof("admin user ready: %s", u.Username)
+	}
 	data.InitAnalyzeSentiment()
-	AutoMigrate()
 
 	log.SugaredLogger.Info("starting go-stock web...")
 	log.SugaredLogger.Infof("version: %s  commit: %s", Version, VersionCommit)
-
-	app := NewApp()
-	ctx := context.Background()
-	app.startup(ctx)
-	app.domReady(ctx)
 
 	addr := os.Getenv("WEB_ADDR")
 	if addr == "" {
@@ -51,7 +55,7 @@ func main() {
 		staticDir = "frontend/dist"
 	}
 
-	srv := newWebServer(app, staticDir)
+	srv := newWebServer(staticDir)
 	errCh := make(chan error, 1)
 	go func() {
 		log.SugaredLogger.Infof("go-stock web listening on %s", addr)
@@ -70,6 +74,5 @@ func main() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutdownCtx)
-		app.shutdown(ctx)
 	}
 }

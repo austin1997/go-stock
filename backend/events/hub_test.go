@@ -76,3 +76,25 @@ func TestSendToConcurrentReconnectDoesNotPanic(t *testing.T) {
 
 	wg.Wait()
 }
+
+func TestBroadcastUserIsolatesClients(t *testing.T) {
+	h := NewHub()
+	a := h.SubscribeUser("a", 1)
+	b := h.SubscribeUser("b", 2)
+
+	h.BroadcastUser(1, Event{Name: "stock_price", Data: "secret-a"})
+
+	select {
+	case ev := <-a.Events():
+		if ev.Data != "secret-a" {
+			t.Fatalf("user A got %+v", ev)
+		}
+	default:
+		t.Fatal("user A should receive")
+	}
+	select {
+	case ev := <-b.Events():
+		t.Fatalf("user B leaked: %+v", ev)
+	default:
+	}
+}

@@ -29,7 +29,12 @@ function wsUrl() {
   return `${proto}//${location.host}/api/ws?clientId=${encodeURIComponent(getClientId())}`
 }
 
+let enabled = false
+
 function connect() {
+  if (!enabled) {
+    return
+  }
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return
   }
@@ -63,6 +68,9 @@ function connect() {
 }
 
 function scheduleReconnect() {
+  if (!enabled) {
+    return
+  }
   if (reconnectTimer) {
     return
   }
@@ -72,7 +80,27 @@ function scheduleReconnect() {
   }, 2000)
 }
 
-connect()
+export function startEventSocket() {
+  enabled = true
+  connect()
+}
+
+export function stopEventSocket() {
+  enabled = false
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  if (socket) {
+    try {
+      socket.onclose = null
+      socket.close()
+    } catch {
+      /* ignore */
+    }
+    socket = null
+  }
+}
 
 function removeCallback(eventName, callback) {
   const set = listeners.get(eventName)

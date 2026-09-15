@@ -9,6 +9,7 @@ import (
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"go-stock/backend/tenant"
 	"go-stock/backend/webmode"
 )
 
@@ -18,8 +19,9 @@ type Event struct {
 }
 
 type Client struct {
-	ID string
-	ch chan Event
+	ID     string
+	UserID uint
+	ch     chan Event
 }
 
 type Hub struct {
@@ -97,9 +99,14 @@ func directedEvent(name string) bool {
 }
 
 func (h *Hub) Subscribe(id string) *Client {
+	return h.SubscribeUser(id, tenant.UserID())
+}
+
+func (h *Hub) SubscribeUser(id string, userID uint) *Client {
 	c := &Client{
-		ID: id,
-		ch: make(chan Event, 256),
+		ID:     id,
+		UserID: userID,
+		ch:     make(chan Event, 256),
 	}
 	h.mu.Lock()
 	old := h.clients[id]
@@ -129,9 +136,16 @@ func (c *Client) Events() <-chan Event {
 }
 
 func (h *Hub) Broadcast(ev Event) {
+	h.BroadcastUser(0, ev)
+}
+
+func (h *Hub) BroadcastUser(userID uint, ev Event) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for _, c := range h.clients {
+		if userID != 0 && c.UserID != 0 && c.UserID != userID {
+			continue
+		}
 		select {
 		case c.ch <- ev:
 		default:
@@ -169,8 +183,19 @@ func Emit(ctx context.Context, name string, data ...any) {
 	if clientID == "" {
 		clientID = Caller()
 	}
+	uid := tenant.UserID()
+	if uid == 0 {
+		if rt := tenant.FromContext(ctx); rt != nil {
+			uid = rt.UserID
+		}
+	}
 	if clientID != "" && directedEvent(name) {
 		Default.SendTo(clientID, ev)
+	} else if webmode.Enabled() {
+		if uid == 0 {
+			return
+		}
+		Default.BroadcastUser(uid, ev)
 	} else {
 		Default.Broadcast(ev)
 	}

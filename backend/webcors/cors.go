@@ -8,9 +8,7 @@ import (
 )
 
 // Middleware restricts browser cross-origin access to same-origin and loopback
-// pages. The web server has no authentication, so reflecting an arbitrary
-// Origin together with Access-Control-Allow-Credentials would let any site
-// the user has open call /api/rpc (GetConfig, UpdateConfig, etc.).
+// pages. Credentials (session cookies) are allowed only for those origins.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
@@ -22,7 +20,8 @@ func Middleware(next http.Handler) http.Handler {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Client-Id")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PATCH, DELETE")
+			w.Header().Set("Access-Control-Allow-Credentials", "true")
 		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

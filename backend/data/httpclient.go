@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+
+	"go-stock/backend/tenant"
+	"go-stock/backend/webmode"
 )
 
 var (
@@ -33,7 +36,7 @@ func init() {
 		ResponseHeaderTimeout: 120 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
-		Proxy:                 nil,
+		Proxy:                 resolveHTTPProxy,
 	}
 
 	sharedHTTPClient = &http.Client{
@@ -46,6 +49,18 @@ func init() {
 		SetTimeout(300 * time.Second)
 }
 
+func resolveHTTPProxy(req *http.Request) (*url.URL, error) {
+	if rt := tenant.Current(); rt != nil && rt.ProxyOn && rt.ProxyURL != "" {
+		return parseProxyURL(rt.ProxyURL), nil
+	}
+	httpConfigMutex.RLock()
+	defer httpConfigMutex.RUnlock()
+	if currentProxyEnabled && currentProxyURL != "" {
+		return parseProxyURL(currentProxyURL), nil
+	}
+	return nil, nil
+}
+
 func UpdateHTTPClientProxy(proxyURL string) {
 	httpConfigMutex.Lock()
 	defer httpConfigMutex.Unlock()
@@ -54,7 +69,6 @@ func UpdateHTTPClientProxy(proxyURL string) {
 		return
 	}
 
-	sharedTransport.Proxy = http.ProxyURL(parseProxyURL(proxyURL))
 	currentProxyURL = proxyURL
 	currentProxyEnabled = true
 }
@@ -63,7 +77,6 @@ func DisableHTTPClientProxy() {
 	httpConfigMutex.Lock()
 	defer httpConfigMutex.Unlock()
 
-	sharedTransport.Proxy = nil
 	currentProxyEnabled = false
 	currentProxyURL = ""
 }
@@ -86,7 +99,9 @@ func ConfigureFromSettings(config *SettingConfig) {
 		return
 	}
 
-	if config.HttpProxyEnabled && config.HttpProxy != "" {
+	if webmode.Enabled() {
+		tenant.SetProxy(config.HttpProxy, config.HttpProxyEnabled)
+	} else if config.HttpProxyEnabled && config.HttpProxy != "" {
 		UpdateHTTPClientProxy(config.HttpProxy)
 	} else {
 		DisableHTTPClientProxy()

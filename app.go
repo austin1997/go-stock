@@ -17,6 +17,7 @@ import (
 	"go-stock/backend/logger"
 	"go-stock/backend/machineid"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 	"go-stock/backend/util"
 	"go-stock/backend/webdownload"
 	"go-stock/backend/webmode"
@@ -66,7 +67,19 @@ type App struct {
 func NewApp() *App {
 	cacheSize := 512 * 1024
 	cache := freecache.NewCache(cacheSize)
-	c := cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cron.DefaultLogger)))
+	c := cron.New(cron.WithSeconds(), cron.WithChain(
+		cron.Recover(cron.DefaultLogger),
+		func(job cron.Job) cron.Job {
+			captured := tenant.Capture()
+			return cron.FuncJob(func() {
+				if captured != nil {
+					tenant.Bind(captured)
+					defer tenant.Unbind()
+				}
+				job.Run()
+			})
+		},
+	))
 	c.Start()
 	var tools []data.Tool
 	tools = data.Tools(tools)
@@ -780,18 +793,18 @@ func (a *App) domReady(ctx context.Context) {
 
 	// 启动飞书应用机器人（如已启用）
 	if config != nil && config.FeishuBotEnable {
-		go func() {
+		tenant.Go(func() {
 			defer PanicHandler()
 			if err := a.startFeishuBot(); err != nil {
 				logger.SugaredLogger.Errorf("auto start feishu bot failed: %v", err)
 			}
-		}()
+		})
 	}
 
-	go func() {
-		go data.NewMarketNewsApi().TelegraphList(30)
-		go data.NewMarketNewsApi().GetSinaNews(30)
-		go data.NewMarketNewsApi().TradingViewNews()
+	tenant.Go(func() {
+		tenant.Go(func() { data.NewMarketNewsApi().TelegraphList(30) })
+		tenant.Go(func() { data.NewMarketNewsApi().GetSinaNews(30) })
+		tenant.Go(func() { data.NewMarketNewsApi().TradingViewNews() })
 
 		interval := config.RefreshInterval
 		if interval <= 0 {
@@ -814,7 +827,7 @@ func (a *App) domReady(ctx context.Context) {
 			//news := data.NewMarketNewsApi().GetNewTelegraph(30)
 			news := data.NewMarketNewsApi().TelegraphList(30)
 			if data.GetSettingConfig().EnablePushNews {
-				go a.NewsPush(news)
+				tenant.Go(func() { a.NewsPush(news) })
 			}
 			go events.Emit(a.ctx, "newTelegraph", news)
 		})
@@ -827,7 +840,7 @@ func (a *App) domReady(ctx context.Context) {
 		entryIDSina, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", interval+10), func() {
 			news := data.NewMarketNewsApi().GetSinaNews(30)
 			if data.GetSettingConfig().EnablePushNews {
-				go a.NewsPush(news)
+				tenant.Go(func() { a.NewsPush(news) })
 			}
 			go events.Emit(a.ctx, "newSinaNews", news)
 		})
@@ -840,7 +853,7 @@ func (a *App) domReady(ctx context.Context) {
 		entryIDTradingViewNews, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", interval+10), func() {
 			news := data.NewMarketNewsApi().TradingViewNews()
 			if data.GetSettingConfig().EnablePushNews {
-				go a.NewsPush(news)
+				tenant.Go(func() { a.NewsPush(news) })
 			}
 			go events.Emit(a.ctx, "tradingViewNews", news)
 		})
@@ -849,10 +862,10 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("tradingViewNews", entryIDTradingViewNews)
 		}
-	}()
+	})
 
 	// 政策新闻后台定时抓取（全部门聚合，自动入库，每 5 分钟一次）
-	go func() {
+	tenant.Go(func() {
 		scrapePolicyNews := func() {
 			items := data.NewPolicyNewsApi().GetAllDeptPolicyNews(100)
 			logger.SugaredLogger.Infof("政策新闻后台抓取完成，共 %d 条", len(*items))
@@ -869,10 +882,10 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("PolicyNews", idPolicyNews)
 		}
-	}()
+	})
 
 	//刷新基金净值信息
-	go func() {
+	tenant.Go(func() {
 		//ticker := time.NewTicker(time.Second * time.Duration(60))
 		//defer ticker.Stop()
 		//for range ticker.C {
@@ -919,7 +932,7 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("MonitorFollowedStockCostPrices", idCostPrice)
 		}
 
-	}()
+	})
 
 	if config.EnableNews {
 		//go func() {
@@ -948,17 +961,17 @@ func (a *App) domReady(ctx context.Context) {
 
 		go events.Emit(a.ctx, "telegraph", refreshTelegraphList())
 	}
-	go MonitorStockPrices(a)
+	tenant.Go(func() { MonitorStockPrices(a) })
 	if config.EnableFund {
-		go MonitorFundPrices(a)
-		go data.NewFundApi().AllFund()
+		tenant.Go(func() { MonitorFundPrices(a) })
+		tenant.Go(func() { data.NewFundApi().AllFund() })
 	}
 	// AI 推荐股票价格监控
-	go MonitorAiRecommendStockPrices(a)
+	tenant.Go(func() { MonitorAiRecommendStockPrices(a) })
 	// 自选股成本价监控
-	go MonitorFollowedStockCostPrices(a)
+	tenant.Go(func() { MonitorFollowedStockCostPrices(a) })
 	// 市场统计数据采集（交易日每5分钟）
-	go func() {
+	tenant.Go(func() {
 		a.FetchAndSaveMarketStatistic()
 		idMarketStat, err := a.cron.AddFunc("0 */5 9-15 * * 1-5", func() {
 			a.FetchAndSaveMarketStatistic()
@@ -968,9 +981,9 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("FetchAndSaveMarketStatistic", idMarketStat)
 		}
-	}()
+	})
 	// 板块资金流向数据采集（交易日每60秒）
-	go func() {
+	tenant.Go(func() {
 		data.NewBKFundFlowApi().FetchAndSave()
 		idBKFundFlow, err := a.cron.AddFunc("@every 60s", func() {
 			if a.IsTradingTime() {
@@ -982,9 +995,9 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("BKFundFlowFetchAndSave", idBKFundFlow)
 		}
-	}()
+	})
 	// 概念资金流向数据采集（交易日每60秒）
-	go func() {
+	tenant.Go(func() {
 		data.NewConceptFundFlowApi().FetchAndSave()
 		idConceptFundFlow, err := a.cron.AddFunc("@every 60s", func() {
 			if a.IsTradingTime() {
@@ -996,12 +1009,12 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("ConceptFundFlowFetchAndSave", idConceptFundFlow)
 		}
-	}()
+	})
 	//检查新版本
-	go func() {
+	tenant.Go(func() {
 		a.CheckUpdate(0)
-		go a.CheckStockBaseInfo(a.ctx)
-		go syncAllStockInfo(a.ctx)
+		tenant.Go(func() { a.CheckStockBaseInfo(a.ctx) })
+		tenant.Go(func() { syncAllStockInfo(a.ctx) })
 
 		a.cron.AddFunc("0 0 2 * * *", func() {
 			logger.SugaredLogger.Errorf("Checking for updates...")
@@ -1014,7 +1027,7 @@ func (a *App) domReady(ctx context.Context) {
 		a.cron.AddFunc("30 05 8,12,20 * * *", func() {
 			syncAllStockInfo(a.ctx)
 		})
-	}()
+	})
 
 	//检查谷歌浏览器
 	//go func() {
@@ -4402,6 +4415,9 @@ const (
 // 使用可执行文件所在目录而非 os.Getwd()，确保无论从哪个工作目录启动 go-stock，
 // skills 目录都固定在程序所在目录下；可执行文件路径获取失败时降级到当前工作目录。
 func skillsDir() string {
+	if root := tenant.Root(); root != "" {
+		return filepath.Join(root, "skills")
+	}
 	if exePath, err := os.Executable(); err == nil && exePath != "" {
 		return filepath.Join(filepath.Dir(exePath), "skills")
 	}

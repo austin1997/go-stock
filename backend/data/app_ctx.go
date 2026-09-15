@@ -5,6 +5,7 @@ import (
 	"sync"
 
 	"go-stock/backend/events"
+	"go-stock/backend/tenant"
 )
 
 // @Author spark
@@ -32,6 +33,9 @@ func EmitStockDataChanged() {
 	appCtxMu.RLock()
 	ctx := appCtx
 	appCtxMu.RUnlock()
+	if rt := tenant.Current(); rt != nil {
+		ctx = tenant.WithRuntime(context.Background(), rt)
+	}
 	if ctx == nil {
 		return
 	}
