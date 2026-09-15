@@ -28,6 +28,11 @@ import (
 	"go-stock/backend/webdownload"
 )
 
+const (
+	maxRPCBodyBytes    = 32 << 20
+	maxUploadBodyBytes = 64 << 20
+)
+
 type webServer struct {
 	http      *http.Server
 	staticDir string
@@ -125,6 +130,7 @@ func (s *webServer) handleRPC(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, rpcResponse{Error: "workspace: " + err.Error()})
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxRPCBodyBytes)
 	var req rpcRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, rpcResponse{Error: "invalid json: " + err.Error()})
@@ -240,13 +246,14 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 	if clientID == "" {
 		clientID = uuid.NewString()
 	}
+	session := webauth.SessionToken(r)
 	conn, _, _, err := ws.UpgradeHTTP(r, w)
 	if err != nil {
 		logger.SugaredLogger.Errorf("ws upgrade: %v", err)
 		return
 	}
 
-	c := events.Default.SubscribeUser(clientID, u.ID)
+	c := events.Default.SubscribeUserSession(clientID, u.ID, session)
 	var writeMu sync.Mutex
 	write := func(v any) error {
 		b, err := json.Marshal(v)
@@ -265,6 +272,24 @@ func (s *webServer) handleWS(w http.ResponseWriter, r *http.Request) {
 		for ev := range c.Events() {
 			if err := write(ev); err != nil {
 				return
+			}
+		}
+	}()
+
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if _, err := webauth.UserBySession(session); err != nil {
+					_ = conn.Close()
+					return
+				}
 			}
 		}
 	}()
@@ -300,7 +325,8 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	u := webauth.UserFromRequest(r)
-	if err := r.ParseMultipartForm(64 << 20); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBodyBytes)
+	if err := r.ParseMultipartForm(maxUploadBodyBytes); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -321,6 +347,7 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer dst.Close()
 	if _, err := io.Copy(dst, file); err != nil {
+		_ = os.Remove(dstPath)
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}

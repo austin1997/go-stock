@@ -9,6 +9,11 @@ func Enable() {
 	enabled.Store(true)
 }
 
+// Disable 仅用于测试，恢复为桌面模式。
+func Disable() {
+	enabled.Store(false)
+}
+
 // Enabled 返回是否运行在网页版进程中。
 func Enabled() bool {
 	return enabled.Load()

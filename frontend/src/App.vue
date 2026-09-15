@@ -143,6 +143,10 @@ const investmentMottos = [
 ]
 const currentMotto = ref(investmentMottos[Math.floor(Math.random() * investmentMottos.length)])
 
+function refreshMotto() {
+  currentMotto.value = investmentMottos[Math.floor(Math.random() * investmentMottos.length)]
+}
+
 function startWebEvents() {
   if (!isWeb) return
   import('../wailsjs/runtime').then((rt) => {

@@ -1,6 +1,7 @@
 package data
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/url"
@@ -20,7 +21,40 @@ var (
 	httpConfigMutex     sync.RWMutex
 	currentProxyEnabled bool
 	currentProxyURL     string
+	currentTimeout      = 300 * time.Second
 )
+
+type timeoutRoundTripper struct {
+	base http.RoundTripper
+}
+
+func requestTimeout() time.Duration {
+	if d := tenant.HTTPTimeout(); d > 0 {
+		return d
+	}
+	httpConfigMutex.RLock()
+	defer httpConfigMutex.RUnlock()
+	if currentTimeout > 0 {
+		return currentTimeout
+	}
+	return 300 * time.Second
+}
+
+func (t *timeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return t.base.RoundTrip(req)
+	}
+	if _, hasDeadline := req.Context().Deadline(); hasDeadline {
+		return t.base.RoundTrip(req)
+	}
+	d := requestTimeout()
+	if d <= 0 {
+		return t.base.RoundTrip(req)
+	}
+	ctx, cancel := context.WithTimeout(req.Context(), d)
+	defer cancel()
+	return t.base.RoundTrip(req.WithContext(ctx))
+}
 
 func init() {
 	sharedTransport = &http.Transport{
@@ -40,7 +74,7 @@ func init() {
 	}
 
 	sharedHTTPClient = &http.Client{
-		Transport: sharedTransport,
+		Transport: &timeoutRoundTripper{base: sharedTransport},
 		Timeout:   300 * time.Second,
 	}
 
@@ -82,6 +116,16 @@ func DisableHTTPClientProxy() {
 }
 
 func UpdateHTTPClientTimeout(timeout time.Duration) {
+	if timeout <= 0 {
+		timeout = 300 * time.Second
+	}
+	if webmode.Enabled() {
+		tenant.SetHTTPTimeout(timeout)
+		return
+	}
+	httpConfigMutex.Lock()
+	currentTimeout = timeout
+	httpConfigMutex.Unlock()
 	sharedHTTPClient.Timeout = timeout
 	SharedHTTPClient.SetTimeout(timeout)
 }
@@ -101,6 +145,12 @@ func ConfigureFromSettings(config *SettingConfig) {
 
 	if webmode.Enabled() {
 		tenant.SetProxy(config.HttpProxy, config.HttpProxyEnabled)
+		if config.CrawlTimeOut > 0 {
+			tenant.SetHTTPTimeout(time.Duration(config.CrawlTimeOut) * time.Second)
+		} else {
+			tenant.SetHTTPTimeout(300 * time.Second)
+		}
+		return
 	} else if config.HttpProxyEnabled && config.HttpProxy != "" {
 		UpdateHTTPClientProxy(config.HttpProxy)
 	} else {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sync"
+	"time"
 
 	"gorm.io/gorm"
 )
@@ -12,11 +13,12 @@ import (
 // Runtime 网页版当前请求/任务绑定的用户工作空间。
 // 桌面版不会 Bind，所有读写继续走全局 data/stock.db。
 type Runtime struct {
-	UserID   uint
-	DB       *gorm.DB
-	Root     string
-	ProxyOn  bool
-	ProxyURL string
+	UserID      uint
+	DB          *gorm.DB
+	Root        string
+	ProxyOn     bool
+	ProxyURL    string
+	HTTPTimeout time.Duration
 }
 
 type ctxKey struct{}
@@ -107,6 +109,24 @@ func SetProxy(proxyURL string, enabled bool) {
 	}
 }
 
+// SetHTTPTimeout 更新当前租户的出站 HTTP 超时，避免改到全局共享 Client。
+func SetHTTPTimeout(d time.Duration) {
+	rt := Current()
+	if rt == nil {
+		return
+	}
+	rt.HTTPTimeout = d
+}
+
+// HTTPTimeout 返回当前租户超时；未绑定为 0。
+func HTTPTimeout() time.Duration {
+	rt := Current()
+	if rt == nil {
+		return 0
+	}
+	return rt.HTTPTimeout
+}
+
 // WithRuntime 将 Runtime 写入 context，供异步 Emit 在丢失 goid 绑定时仍能隔离事件。
 func WithRuntime(ctx context.Context, rt *Runtime) context.Context {
 	if ctx == nil {
@@ -129,10 +149,18 @@ func FromContext(ctx context.Context) *Runtime {
 
 // Go 在子 goroutine 中继承当前租户绑定。
 func Go(fn func()) {
+	GoContext(nil, fn)
+}
+
+// GoContext 在子 goroutine 中继承当前绑定，若当前未绑定则回退到 context 中的 Runtime。
+func GoContext(ctx context.Context, fn func()) {
 	if fn == nil {
 		return
 	}
 	rt := Capture()
+	if rt == nil {
+		rt = FromContext(ctx)
+	}
 	go func() {
 		if rt != nil {
 			Bind(rt)

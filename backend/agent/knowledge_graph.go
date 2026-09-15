@@ -31,6 +31,7 @@ import (
 
 	"go-stock/backend/data"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 )
 
 const (
@@ -145,7 +146,7 @@ func BuildKBGraph(kbName string, aiConfigID uint) error {
 
 	initKBMeta()
 	kbMetaMu.RLock()
-	_, exists := kbMetaInMemory[kbName]
+	_, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists {
 		return fmt.Errorf("知识库 %q 不存在", kbName)
@@ -153,17 +154,17 @@ func BuildKBGraph(kbName string, aiConfigID uint) error {
 
 	// 并发控制：同一 KB 不能重复构建
 	kbGraphBuildMu.Lock()
-	if st, ok := kbGraphBuildStatuses[kbName]; ok && st.IsBuilding {
+	if st, ok := kbGraphBuildStatuses[graphKey(kbName)]; ok && st.IsBuilding {
 		kbGraphBuildMu.Unlock()
 		return fmt.Errorf("知识库 %q 的图谱正在构建中", kbName)
 	}
-	kbGraphBuildStatuses[kbName] = &KBGraphBuildStatus{
+	kbGraphBuildStatuses[graphKey(kbName)] = &KBGraphBuildStatus{
 		IsBuilding: true,
 		StartedAt:  time.Now(),
 	}
 	kbGraphBuildMu.Unlock()
 
-	go func() {
+	tenant.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.SugaredLogger.Errorf("BuildKBGraph panic: kb=%q err=%v", kbName, r)
@@ -171,7 +172,7 @@ func BuildKBGraph(kbName string, aiConfigID uint) error {
 			}
 		}()
 		buildKBGraphSync(kbName, aiConfigID)
-	}()
+	})
 	return nil
 }
 
@@ -200,7 +201,7 @@ func GetKBGraph(kbName string) (*KBGraph, error) {
 func GetKBGraphBuildStatus(kbName string) *KBGraphBuildStatus {
 	kbGraphBuildMu.RLock()
 	defer kbGraphBuildMu.RUnlock()
-	if st, ok := kbGraphBuildStatuses[kbName]; ok {
+	if st, ok := kbGraphBuildStatuses[graphKey(kbName)]; ok {
 		cp := *st
 		return &cp
 	}
@@ -219,7 +220,7 @@ func DeleteKBGraph(kbName string) error {
 	}
 	// 清除构建状态
 	kbGraphBuildMu.Lock()
-	delete(kbGraphBuildStatuses, kbName)
+	delete(kbGraphBuildStatuses, graphKey(kbName))
 	kbGraphBuildMu.Unlock()
 	logger.SugaredLogger.Infof("知识图谱已删除: kb=%q", kbName)
 	return nil
@@ -238,7 +239,7 @@ func kbGraphFilePath(kbName string) string {
 func setKBGraphProgress(kbName string, processed, total, nodeCount, edgeCount int) {
 	kbGraphBuildMu.Lock()
 	defer kbGraphBuildMu.Unlock()
-	if st, ok := kbGraphBuildStatuses[kbName]; ok {
+	if st, ok := kbGraphBuildStatuses[graphKey(kbName)]; ok {
 		st.ProcessedDocs = processed
 		st.TotalDocs = total
 		st.NodeCount = nodeCount
@@ -250,10 +251,10 @@ func setKBGraphProgress(kbName string, processed, total, nodeCount, edgeCount in
 func finishKBGraphBuild(kbName string, nodeCount, edgeCount int, errMsg string) {
 	kbGraphBuildMu.Lock()
 	defer kbGraphBuildMu.Unlock()
-	st, ok := kbGraphBuildStatuses[kbName]
+	st, ok := kbGraphBuildStatuses[graphKey(kbName)]
 	if !ok {
 		st = &KBGraphBuildStatus{StartedAt: time.Now()}
-		kbGraphBuildStatuses[kbName] = st
+		kbGraphBuildStatuses[graphKey(kbName)] = st
 	}
 	st.IsBuilding = false
 	now := time.Now()
@@ -267,7 +268,7 @@ func finishKBGraphBuild(kbName string, nodeCount, edgeCount int, errMsg string) 
 func buildKBGraphSync(kbName string, aiConfigID uint) {
 	db := getKBDB()
 	if db == nil {
-		finishKBGraphBuild(kbName, 0, 0, fmt.Sprintf("向量库未初始化: %v", longTermMemoryErr))
+		finishKBGraphBuild(kbName, 0, 0, fmt.Sprintf("向量库未初始化: %v", initLongTermMemoryStore().err))
 		return
 	}
 
@@ -284,7 +285,7 @@ func buildKBGraphSync(kbName string, aiConfigID uint) {
 
 	// 获取 KB 元信息与文档索引
 	kbMetaMu.RLock()
-	info, exists := kbMetaInMemory[kbName]
+	info, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists || info == nil {
 		finishKBGraphBuild(kbName, 0, 0, fmt.Sprintf("知识库 %q 不存在", kbName))

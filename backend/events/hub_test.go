@@ -98,3 +98,23 @@ func TestBroadcastUserIsolatesClients(t *testing.T) {
 	default:
 	}
 }
+
+func TestDisconnectUserClosesClient(t *testing.T) {
+	h := NewHub()
+	c := h.SubscribeUserSession("c1", 9, "tok")
+	h.DisconnectUser(9)
+	_, ok := <-c.Events()
+	if ok {
+		t.Fatal("expected closed channel after disconnect")
+	}
+}
+
+func TestDisconnectSessionClosesClient(t *testing.T) {
+	h := NewHub()
+	c := h.SubscribeUserSession("c2", 3, "sess")
+	h.DisconnectSession("sess")
+	_, ok := <-c.Events()
+	if ok {
+		t.Fatal("expected closed channel after session disconnect")
+	}
+}

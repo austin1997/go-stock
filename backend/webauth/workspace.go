@@ -6,7 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 )
+
+var migrateMu sync.Mutex
 
 func UsersRoot() string {
 	return filepath.Join("data", "users")
@@ -83,6 +86,9 @@ func CopyDefaultSkills(userID uint) error {
 
 // MigrateLegacyIfNeeded 将单用户 data/stock.db、memory/、skills/ 迁入第一个用户工作空间。
 func MigrateLegacyIfNeeded(userID uint) error {
+	migrateMu.Lock()
+	defer migrateMu.Unlock()
+
 	legacyDB := filepath.Join("data", "stock.db")
 	marker := filepath.Join("data", "stock.db.migrated")
 	if _, err := os.Stat(marker); err == nil {
@@ -91,18 +97,19 @@ func MigrateLegacyIfNeeded(userID uint) error {
 	if _, err := os.Stat(legacyDB); err != nil {
 		return nil
 	}
+	if !ownsLegacyMigration(userID) {
+		return nil
+	}
 	if err := EnsureWorkspaceDirs(userID); err != nil {
 		return err
 	}
 	dstDB := StockDBPath(userID)
 	if _, err := os.Stat(dstDB); err == nil {
+		_ = os.WriteFile(marker, []byte("1"), 0o644)
 		return nil
 	}
-	if err := os.Rename(legacyDB, dstDB); err != nil {
-		if err := copyFile(legacyDB, dstDB); err != nil {
-			return fmt.Errorf("migrate stock.db: %w", err)
-		}
-		_ = os.Rename(legacyDB, legacyDB+".bak")
+	if err := migrateSQLiteFiles(legacyDB, dstDB); err != nil {
+		return fmt.Errorf("migrate stock.db: %w", err)
 	}
 	if st, err := os.Stat("memory"); err == nil && st.IsDir() {
 		dst := filepath.Join(WorkspaceRoot(userID), "memory")
@@ -117,6 +124,38 @@ func MigrateLegacyIfNeeded(userID uint) error {
 		}
 	}
 	_ = os.WriteFile(marker, []byte("1"), 0o644)
+	return nil
+}
+
+func ownsLegacyMigration(userID uint) bool {
+	if authDB == nil {
+		return true
+	}
+	var first User
+	if err := authDB.Order("id asc").First(&first).Error; err != nil {
+		return false
+	}
+	return first.ID == userID
+}
+
+func migrateSQLiteFiles(src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		from := src + suffix
+		to := dst + suffix
+		if _, err := os.Stat(from); err != nil {
+			continue
+		}
+		if err := os.Rename(from, to); err == nil {
+			continue
+		}
+		if err := copyFile(from, to); err != nil {
+			return err
+		}
+		_ = os.Rename(from, from+".bak")
+	}
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"go-stock/backend/agent/tools"
 	"go-stock/backend/data"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 	"io"
 	"os"
 	"path/filepath"
@@ -147,7 +148,7 @@ func sanitizeReportFilename(s string, maxLen int) string {
 func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question string, aiConfigId int, sysPromptId *int, memoryMode bool, memoryCount int, thinkingMode bool, agentMode string, optsOverride ...string) chan *schema.Message {
 	ch := make(chan *schema.Message, 1024)
 
-	go func() {
+	tenant.GoContext(ctx, func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.SugaredLogger.Errorf("panic in ChatWithContext: %v", r)
@@ -418,7 +419,7 @@ func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question strin
 			AIConfigID:      aiConfigId,
 			ThinkingMode:    thinkingMode,
 		})
-	}()
+	})
 
 	return ch
 }

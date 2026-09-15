@@ -33,6 +33,7 @@ import (
 
 	"go-stock/backend/data"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 )
 
 const (
@@ -85,14 +86,82 @@ func normalizeText(s string) string {
 	return s
 }
 
-// longTermMemoryStore 单例向量库实例（懒加载）
+// ltmHolder 每个租户一份向量库实例（懒加载）
+type ltmHolder struct {
+	db   *chromem.DB
+	coll *chromem.Collection
+	err  error
+}
+
 var (
-	longTermMemoryMu   sync.Mutex
-	longTermMemoryDB   *chromem.DB
-	longTermMemoryColl *chromem.Collection
-	longTermMemoryErr  error // 初始化失败原因（用于日志与降级判断）
-	longTermMemoryInit bool  // 是否已尝试初始化（失败后允许重试）
+	longTermMemoryMu     sync.Mutex
+	longTermMemoryByKey  = map[string]*ltmHolder{}
 )
+
+func initLongTermMemoryStore() *ltmHolder {
+	key := memoryTenantKey()
+	longTermMemoryMu.Lock()
+	defer longTermMemoryMu.Unlock()
+	if h, ok := longTermMemoryByKey[key]; ok && h != nil && h.db != nil && h.coll != nil {
+		return h
+	}
+
+	h := &ltmHolder{}
+	if existing, ok := longTermMemoryByKey[key]; ok && existing != nil {
+		h = existing
+	} else {
+		longTermMemoryByKey[key] = h
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			h.err = fmt.Errorf("panic: %v", r)
+			logger.SugaredLogger.Errorf("initLongTermMemoryStore panic: %v", r)
+		}
+	}()
+
+	rootDir := deepAgentRootDir()
+	if rootDir == "" || rootDir == "." {
+		h.err = fmt.Errorf("deepAgentRootDir 返回空或当前目录")
+		return h
+	}
+	storePath := filepath.Join(rootDir, memoryDirName, vectorStoreDirName)
+
+	db, err := chromem.NewPersistentDB(storePath, false /* compress */)
+	if err != nil {
+		h.err = fmt.Errorf("创建持久化向量库失败: %w", err)
+		logger.SugaredLogger.Errorf("长期记忆向量库初始化失败: %v (path=%s)", err, storePath)
+		return h
+	}
+
+	embedFunc, aiCfgInfo, err := buildEmbeddingFunc()
+	if err != nil {
+		h.err = fmt.Errorf("构造 embedding 函数失败: %w", err)
+		logger.SugaredLogger.Warnf("长期记忆向量库 embedding 未就绪: %v (将降级到文件名扫描)", err)
+		return h
+	}
+
+	coll, err := db.GetOrCreateCollection(longTermMemoryCollectionName, nil, embedFunc)
+	if err != nil {
+		h.err = fmt.Errorf("创建 collection 失败: %w", err)
+		logger.SugaredLogger.Errorf("长期记忆向量库 collection 创建失败: %v", err)
+		return h
+	}
+
+	h.db = db
+	h.coll = coll
+	h.err = nil
+	logger.SugaredLogger.Infof("长期记忆向量库已就绪: path=%s collection=%s docs=%d embedding=%s tenant=%s",
+		storePath, longTermMemoryCollectionName, coll.Count(), aiCfgInfo, key)
+	return h
+}
+
+func resetLongTermMemoryStore() {
+	key := memoryTenantKey()
+	longTermMemoryMu.Lock()
+	defer longTermMemoryMu.Unlock()
+	delete(longTermMemoryByKey, key)
+}
 
 // MemoryRecall 单条历史经验检索结果
 type MemoryRecall struct {
@@ -102,86 +171,6 @@ type MemoryRecall struct {
 	Date       string  `json:"date"`       // 归档日期 YYYY-MM-DD
 	ReportPath string  `json:"reportPath"` // 归档报告文件路径（便于追溯全文）
 	Similarity float32 `json:"similarity"` // 与查询的余弦相似度 [-1, 1]
-}
-
-// initLongTermMemoryStore 懒加载初始化向量库。
-//
-// 初始化流程：
-//  1. 解析持久化路径 <exe_dir>/memory/.vectorstore/
-//  2. 从 data.GetSettingConfig() 选取首个可用的 AIConfig（ApiKey + BaseUrl 非空）
-//  3. 构造 OpenAI 兼容 embedding 函数（chromem-go 内置）
-//  4. 创建或读取持久化 collection
-//
-// 任意步骤失败均记录日志并设置 longTermMemoryErr，调用方据此判断是否降级。
-// 该函数幂等，多次调用只初始化一次。
-func initLongTermMemoryStore() {
-	longTermMemoryMu.Lock()
-	defer longTermMemoryMu.Unlock()
-	// 已成功初始化则跳过
-	if longTermMemoryDB != nil && longTermMemoryColl != nil {
-		return
-	}
-
-	defer func() {
-		if r := recover(); r != nil {
-			longTermMemoryErr = fmt.Errorf("panic: %v", r)
-			logger.SugaredLogger.Errorf("initLongTermMemoryStore panic: %v", r)
-		}
-	}()
-
-	rootDir := deepAgentRootDir()
-	if rootDir == "" || rootDir == "." {
-		longTermMemoryErr = fmt.Errorf("deepAgentRootDir 返回空或当前目录")
-		return
-	}
-	storePath := filepath.Join(rootDir, memoryDirName, vectorStoreDirName)
-
-	// 创建持久化 DB（目录不存在时 chromem-go 会自动创建）
-	db, err := chromem.NewPersistentDB(storePath, false /* compress */)
-	if err != nil {
-		longTermMemoryErr = fmt.Errorf("创建持久化向量库失败: %w", err)
-		logger.SugaredLogger.Errorf("长期记忆向量库初始化失败: %v (path=%s)", err, storePath)
-		return
-	}
-
-	// 选取可用的 AIConfig 用于构造 embedding 函数
-	embedFunc, aiCfgInfo, err := buildEmbeddingFunc()
-	if err != nil {
-		longTermMemoryErr = fmt.Errorf("构造 embedding 函数失败: %w", err)
-		logger.SugaredLogger.Warnf("长期记忆向量库 embedding 未就绪: %v (将降级到文件名扫描)", err)
-		return
-	}
-
-	// 创建或读取 collection（metadata 留空，所有文档统一存 qa_history）
-	coll, err := db.GetOrCreateCollection(longTermMemoryCollectionName, nil, embedFunc)
-	if err != nil {
-		longTermMemoryErr = fmt.Errorf("创建 collection 失败: %w", err)
-		logger.SugaredLogger.Errorf("长期记忆向量库 collection 创建失败: %v", err)
-		return
-	}
-
-	longTermMemoryDB = db
-	longTermMemoryColl = coll
-	longTermMemoryErr = nil
-	longTermMemoryInit = true
-	logger.SugaredLogger.Infof("长期记忆向量库已就绪: path=%s collection=%s docs=%d embedding=%s",
-		storePath, longTermMemoryCollectionName, coll.Count(), aiCfgInfo)
-}
-
-// resetLongTermMemoryStore 重置长期记忆向量库单例（切换向量服务后调用）。
-//
-// 背景：chromem-go 的 GetCollection 在 collection 已加载且 embed 非空时，
-// 会忽略新传入的 embeddingFunc——单例一旦用旧配置初始化，配置变更后本会话内
-// 永远不会生效。重置后下次 initLongTermMemoryStore 会以新配置重建；
-// DB 为持久化存储（NewPersistentDB），重建时自动从磁盘重新加载文档，
-// 知识库（共用该 DB）的数据不受影响。
-func resetLongTermMemoryStore() {
-	longTermMemoryMu.Lock()
-	defer longTermMemoryMu.Unlock()
-	longTermMemoryDB = nil
-	longTermMemoryColl = nil
-	longTermMemoryErr = nil
-	longTermMemoryInit = false
 }
 
 // buildEmbeddingFunc 从 data.AIConfig 构造 OpenAI 兼容 embedding 函数（长期记忆专用）。
@@ -311,21 +300,21 @@ func AddMemory(question, response string, mode Mode, reportPath, userKey string)
 	}
 
 	// 异步入库：不阻塞 archiveAnalysisReport
-	go func() {
+	tenant.Go(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 
 		if err := addMemorySync(ctx, question, response, mode, reportPath, userKey); err != nil {
 			logger.SugaredLogger.Warnf("AddMemory 入库失败（不影响主流程）: %v", err)
 		}
-	}()
+	})
 }
 
 // addMemorySync 同步执行切片+入库逻辑（供 AddMemory 的 goroutine 调用）。
 func addMemorySync(ctx context.Context, question, response string, mode Mode, reportPath, userKey string) error {
-	initLongTermMemoryStore()
-	if longTermMemoryColl == nil {
-		return fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+	h := initLongTermMemoryStore()
+	if h.coll == nil {
+		return fmt.Errorf("向量库未初始化: %v", h.err)
 	}
 
 	chunks := sliceForEmbedding(question, response)
@@ -360,7 +349,7 @@ func addMemorySync(ctx context.Context, question, response string, mode Mode, re
 			// Embedding 留空，由 collection.embed 自动生成
 		}
 
-		if err := longTermMemoryColl.AddDocument(ctx, doc); err != nil {
+		if err := h.coll.AddDocument(ctx, doc); err != nil {
 			return fmt.Errorf("写入 chunk %d/%d 失败: %w", i, total, err)
 		}
 	}
@@ -430,11 +419,11 @@ func SearchRelevant(ctx context.Context, query string, topK int, userKey string)
 		topK = longTermMemoryDefaultTopK
 	}
 
-	initLongTermMemoryStore()
-	if longTermMemoryColl == nil {
+	h := initLongTermMemoryStore()
+	if h.coll == nil {
 		return nil
 	}
-	if longTermMemoryColl.Count() == 0 {
+	if h.coll.Count() == 0 {
 		return nil
 	}
 
@@ -459,11 +448,15 @@ func searchRelevantFiltered(ctx context.Context, query string, topK int, where m
 		fetchN = topK
 	}
 	// chromem-go 的 Query 要求 nResults <= 文档数，否则报错；自动截断
-	if docCount := longTermMemoryColl.Count(); fetchN > docCount {
+	h := initLongTermMemoryStore()
+	if h.coll == nil {
+		return nil
+	}
+	if docCount := h.coll.Count(); fetchN > docCount {
 		fetchN = docCount
 	}
 
-	results, err := longTermMemoryColl.Query(ctx, query, fetchN, where, nil)
+	results, err := h.coll.Query(ctx, query, fetchN, where, nil)
 	if err != nil {
 		if strings.Contains(err.Error(), "vectors must have the same length") {
 			// 维度不一致：曾切换过向量服务（embedding 模型），旧向量与新模型维度不同

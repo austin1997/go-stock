@@ -19,9 +19,10 @@ type Event struct {
 }
 
 type Client struct {
-	ID     string
-	UserID uint
-	ch     chan Event
+	ID      string
+	UserID  uint
+	Session string
+	ch      chan Event
 }
 
 type Hub struct {
@@ -103,10 +104,15 @@ func (h *Hub) Subscribe(id string) *Client {
 }
 
 func (h *Hub) SubscribeUser(id string, userID uint) *Client {
+	return h.SubscribeUserSession(id, userID, "")
+}
+
+func (h *Hub) SubscribeUserSession(id string, userID uint, session string) *Client {
 	c := &Client{
-		ID:     id,
-		UserID: userID,
-		ch:     make(chan Event, 256),
+		ID:      id,
+		UserID:  userID,
+		Session: session,
+		ch:      make(chan Event, 256),
 	}
 	h.mu.Lock()
 	old := h.clients[id]
@@ -129,6 +135,32 @@ func (h *Hub) Unsubscribe(c *Client) {
 		close(c.ch)
 	}
 	h.mu.Unlock()
+}
+
+func (h *Hub) DisconnectUser(userID uint) {
+	if userID == 0 {
+		return
+	}
+	h.disconnectMatch(func(c *Client) bool { return c.UserID == userID })
+}
+
+func (h *Hub) DisconnectSession(session string) {
+	if session == "" {
+		return
+	}
+	h.disconnectMatch(func(c *Client) bool { return c.Session == session })
+}
+
+func (h *Hub) disconnectMatch(match func(*Client) bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for id, c := range h.clients {
+		if c == nil || !match(c) {
+			continue
+		}
+		delete(h.clients, id)
+		close(c.ch)
+	}
 }
 
 func (c *Client) Events() <-chan Event {

@@ -273,18 +273,18 @@ type LTMInfo struct {
 
 // GetLongTermMemoryInfo 获取长期记忆向量库信息
 func (a *KnowledgeBaseApi) GetLongTermMemoryInfo() *LTMInfo {
-	initLongTermMemoryStore()
+	h := initLongTermMemoryStore()
 	info := &LTMInfo{}
-	if longTermMemoryErr != nil {
-		info.Error = longTermMemoryErr.Error()
+	if h.err != nil {
+		info.Error = h.err.Error()
 		return info
 	}
-	if longTermMemoryColl == nil {
+	if h.coll == nil {
 		info.Error = "向量库未初始化"
 		return info
 	}
 	info.Ready = true
-	info.DocCount = longTermMemoryColl.Count()
+	info.DocCount = h.coll.Count()
 	if cfg := data.GetSettingConfig(); cfg != nil && cfg.Settings != nil {
 		info.AIConfigID = cfg.LongTermMemoryAiConfigId
 		if info.AIConfigID > 0 {

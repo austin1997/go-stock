@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestBindUnbind(t *testing.T) {
@@ -59,5 +60,34 @@ func TestGoInherits(t *testing.T) {
 	wg.Wait()
 	if got != 9 {
 		t.Fatalf("inherited uid=%d", got)
+	}
+}
+
+func TestGoContextFallsBackToContext(t *testing.T) {
+	if Current() != nil {
+		t.Fatal("expected unbound caller")
+	}
+	rt := &Runtime{UserID: 11}
+	ctx := WithRuntime(context.Background(), rt)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	var got uint
+	GoContext(ctx, func() {
+		defer wg.Done()
+		got = UserID()
+	})
+	wg.Wait()
+	if got != 11 {
+		t.Fatalf("context uid=%d", got)
+	}
+}
+
+func TestSetHTTPTimeout(t *testing.T) {
+	rt := &Runtime{UserID: 4}
+	Bind(rt)
+	defer Unbind()
+	SetHTTPTimeout(12 * time.Second)
+	if HTTPTimeout() != 12*time.Second {
+		t.Fatalf("timeout=%v", HTTPTimeout())
 	}
 }

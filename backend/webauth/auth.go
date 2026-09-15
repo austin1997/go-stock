@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -13,6 +14,7 @@ import (
 	"gorm.io/gorm"
 
 	"go-stock/backend/db"
+	"go-stock/backend/events"
 )
 
 const (
@@ -65,6 +67,7 @@ type PublicUser struct {
 }
 
 var authDB *gorm.DB
+var registerMu sync.Mutex
 
 func Init(sqlitePath string) error {
 	if sqlitePath == "" {
@@ -162,11 +165,20 @@ func CreateUser(username, password string, isAdmin bool) (*User, error) {
 }
 
 func Register(username, password string) (*User, error) {
+	registerMu.Lock()
+	defer registerMu.Unlock()
 	if !AllowRegister() {
 		return nil, ErrRegisterClosed
 	}
-	admin := !HasUsers()
-	return CreateUser(username, password, admin)
+	first := !HasUsers()
+	u, err := CreateUser(username, password, first)
+	if err != nil {
+		return nil, err
+	}
+	if first {
+		_ = MigrateLegacyIfNeeded(u.ID)
+	}
+	return u, nil
 }
 
 func Authenticate(username, password string) (*User, error) {
@@ -218,6 +230,7 @@ func DeleteSession(token string) {
 		return
 	}
 	authDB.Where("token = ?", token).Delete(&Session{})
+	events.Default.DisconnectSession(token)
 }
 
 func UserBySession(token string) (*User, error) {
@@ -258,6 +271,7 @@ func SetDisabled(id uint, disabled bool) error {
 	}
 	if disabled {
 		authDB.Where("user_id = ?", id).Delete(&Session{})
+		events.Default.DisconnectUser(id)
 	}
 	return nil
 }
@@ -284,10 +298,16 @@ func BootstrapAdminFromEnv() (*User, error) {
 			_ = authDB.Model(u).Update("is_admin", true)
 			u.IsAdmin = true
 		}
+		_ = MigrateLegacyIfNeeded(u.ID)
 		return u, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	return CreateUser(username, password, true)
+	u, err = CreateUser(username, password, true)
+	if err != nil {
+		return nil, err
+	}
+	_ = MigrateLegacyIfNeeded(u.ID)
+	return u, nil
 }

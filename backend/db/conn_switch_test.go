@@ -1,6 +1,7 @@
 package db
 
 import (
+	"context"
 	"path/filepath"
 	"testing"
 
@@ -64,4 +65,30 @@ func TestConnPoolSwitchesByTenant(t *testing.T) {
 		t.Fatalf("user A saw %+v", alice)
 	}
 	tenant.Unbind()
+}
+
+func TestConnPoolUsesContextWhenUnbound(t *testing.T) {
+	dir := t.TempDir()
+	InitTenantShell(filepath.Join(dir, "shell.db"))
+
+	aDB, err := Open(filepath.Join(dir, "a.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := aDB.AutoMigrate(&switchRow{}); err != nil {
+		t.Fatal(err)
+	}
+	rtA := &tenant.Runtime{UserID: 1, DB: aDB, Root: filepath.Join(dir, "a")}
+	ctx := tenant.WithRuntime(context.Background(), rtA)
+
+	if err := Dao.WithContext(ctx).Create(&switchRow{Value: "from-ctx"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	var rows []switchRow
+	if err := aDB.Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Value != "from-ctx" {
+		t.Fatalf("context tenant missed write: %+v", rows)
+	}
 }

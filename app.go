@@ -1965,8 +1965,10 @@ func addStockFollowData(follow data.FollowedStock, stockData *data.StockInfo) {
 
 	//logger.SugaredLogger.Debugf("stockData:%+v", stockData)
 	if follow.Price != price && price > 0 {
-		go db.Dao.Model(follow).Where("stock_code = ?", follow.StockCode).Updates(map[string]interface{}{
-			"price": price,
+		tenant.Go(func() {
+			_ = db.Dao.Model(follow).Where("stock_code = ?", follow.StockCode).Updates(map[string]interface{}{
+				"price": price,
+			})
 		})
 	}
 }
@@ -3584,12 +3586,12 @@ func (a *App) ExecuteCronTaskNow(id uint) string {
 		return fmt.Sprintf("任务不存在：%v", err)
 	}
 
-	go func() {
+	tenant.Go(func() {
 		err := agent.NewCronTaskApi().ExecuteTask(a.ctx, task)
 		if err != nil {
 			logger.SugaredLogger.Errorf("执行任务失败：%v %s", err, task.Name)
 		}
-	}()
+	})
 
 	return "任务执行中"
 }
@@ -3613,12 +3615,12 @@ func (a *App) GetCronTaskTypes() []lo.Tuple2[string, string] {
 //	@param sysPromptId 系统提示词模板 ID（0=内置复盘提示词）
 //	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
 func (a *App) GenerateDailyReviewNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
-	go func() {
+	tenant.Go(func() {
 		_, err := agent.NewDailyReviewApi().GenerateDailyReview(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
 		if err != nil {
 			logger.SugaredLogger.Errorf("手动生成复盘报告失败：%v", err)
 		}
-	}()
+	})
 	return "复盘报告生成中，完成后将自动展示"
 }
 
@@ -3654,12 +3656,12 @@ func (a *App) DeleteDailyReview(id uint) string {
 //	@param sysPromptId 系统提示词模板 ID（0=内置盘前策略提示词）
 //	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
 func (a *App) GenerateMorningStrategyNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
-	go func() {
+	tenant.Go(func() {
 		_, err := agent.NewMorningStrategyApi().GenerateMorningStrategy(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
 		if err != nil {
 			logger.SugaredLogger.Errorf("手动生成盘前策略失败：%v", err)
 		}
-	}()
+	})
 	return "盘前策略生成中，完成后将自动展示"
 }
 

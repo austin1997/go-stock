@@ -9,6 +9,7 @@ import (
 )
 
 const Prefix = "WEB_DOWNLOAD:"
+const maxDownloadBytes = 32 << 20
 
 type item struct {
 	Filename  string
@@ -24,11 +25,17 @@ var (
 // PutAndFormat 缓存文件并返回前端可识别的下载令牌：WEB_DOWNLOAD:<id>:<filename>
 func PutAndFormat(filename string, content []byte) string {
 	id := Put(filename, content)
+	if id == "" {
+		return "文件过大,无法保存。"
+	}
 	return fmt.Sprintf("%s%s:%s", Prefix, id, filename)
 }
 
 // Put 缓存待下载内容，返回 id。
 func Put(filename string, content []byte) string {
+	if len(content) > maxDownloadBytes {
+		return ""
+	}
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
 		b = []byte(fmt.Sprintf("%d", time.Now().UnixNano()))

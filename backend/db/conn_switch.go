@@ -15,31 +15,48 @@ type switchPool struct {
 	fallback gorm.ConnPool
 }
 
+func poolFromRuntime(rt *tenant.Runtime) gorm.ConnPool {
+	if rt == nil || rt.DB == nil || rt.DB.ConnPool == nil {
+		return nil
+	}
+	if _, wrapped := rt.DB.ConnPool.(*switchPool); wrapped {
+		return nil
+	}
+	return rt.DB.ConnPool
+}
+
 func (p *switchPool) current() gorm.ConnPool {
-	if rt := tenant.Current(); rt != nil && rt.DB != nil && rt.DB.ConnPool != nil {
-		return rt.DB.ConnPool
+	if pool := poolFromRuntime(tenant.Current()); pool != nil {
+		return pool
 	}
 	return p.fallback
 }
 
+func (p *switchPool) currentFrom(ctx context.Context) gorm.ConnPool {
+	if pool := poolFromRuntime(tenant.FromContext(ctx)); pool != nil {
+		return pool
+	}
+	return p.current()
+}
+
 func (p *switchPool) PrepareContext(ctx context.Context, query string) (*sql.Stmt, error) {
-	return p.current().PrepareContext(ctx, query)
+	return p.currentFrom(ctx).PrepareContext(ctx, query)
 }
 
 func (p *switchPool) ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error) {
-	return p.current().ExecContext(ctx, query, args...)
+	return p.currentFrom(ctx).ExecContext(ctx, query, args...)
 }
 
 func (p *switchPool) QueryContext(ctx context.Context, query string, args ...interface{}) (*sql.Rows, error) {
-	return p.current().QueryContext(ctx, query, args...)
+	return p.currentFrom(ctx).QueryContext(ctx, query, args...)
 }
 
 func (p *switchPool) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	return p.current().QueryRowContext(ctx, query, args...)
+	return p.currentFrom(ctx).QueryRowContext(ctx, query, args...)
 }
 
 func (p *switchPool) BeginTx(ctx context.Context, opts *sql.TxOptions) (gorm.ConnPool, error) {
-	cur := p.current()
+	cur := p.currentFrom(ctx)
 	if beginner, ok := cur.(gorm.ConnPoolBeginner); ok {
 		return beginner.BeginTx(ctx, opts)
 	}
