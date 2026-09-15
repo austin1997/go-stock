@@ -23,6 +23,7 @@ func (a *App) startup(ctx context.Context) {
 	data.ConfigureFromSettings(data.GetSettingConfig())
 	a.ctx = ctx
 	data.SetAppCtx(ctx)
+	a.initJobContext(ctx)
 	a.InitCronTasks()
 	preCacheTradingDays()
 	logger.SugaredLogger.Infof("Version:%s (web)", Version)

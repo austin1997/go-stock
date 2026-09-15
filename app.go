@@ -45,6 +45,8 @@ import (
 // App struct
 type App struct {
 	ctx                context.Context
+	jobCtx             context.Context
+	jobCancel          context.CancelFunc
 	cache              *freecache.Cache
 	cron               *cron.Cron
 	cronEntrys         map[string]cron.EntryID
@@ -67,11 +69,24 @@ type App struct {
 func NewApp() *App {
 	cacheSize := 512 * 1024
 	cache := freecache.NewCache(cacheSize)
+	jobCtx, jobCancel := context.WithCancel(context.Background())
+	a := &App{
+		jobCtx:             jobCtx,
+		jobCancel:          jobCancel,
+		cache:              cache,
+		cronEntrys:         make(map[string]cron.EntryID),
+		AiTools:            data.Tools(nil),
+		stockAlertLastSent: make(map[string]time.Time),
+		priceAtAlertReset:  make(map[string]float64),
+	}
 	c := cron.New(cron.WithSeconds(), cron.WithChain(
 		cron.Recover(cron.DefaultLogger),
 		func(job cron.Job) cron.Job {
 			captured := tenant.Capture()
 			return cron.FuncJob(func() {
+				if a.jobCtx != nil && a.jobCtx.Err() != nil {
+					return
+				}
 				if captured != nil {
 					tenant.Bind(captured)
 					defer tenant.Unbind()
@@ -81,16 +96,31 @@ func NewApp() *App {
 		},
 	))
 	c.Start()
-	var tools []data.Tool
-	tools = data.Tools(tools)
-	return &App{
-		cache:              cache,
-		cron:               c,
-		cronEntrys:         make(map[string]cron.EntryID),
-		AiTools:            tools,
-		stockAlertLastSent: make(map[string]time.Time),
-		priceAtAlertReset:  make(map[string]float64),
+	a.cron = c
+	return a
+}
+
+func (a *App) initJobContext(parent context.Context) {
+	if a == nil {
+		return
 	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	if a.jobCancel != nil {
+		a.jobCancel()
+	}
+	a.jobCtx, a.jobCancel = context.WithCancel(parent)
+}
+
+func (a *App) jobContext() context.Context {
+	if a != nil && a.jobCtx != nil {
+		return a.jobCtx
+	}
+	if a != nil && a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 func (a *App) setCronEntry(key string, id cron.EntryID) {
@@ -1988,8 +2018,16 @@ func (a *App) StopBackground() {
 	if a == nil {
 		return
 	}
+	if a.jobCancel != nil {
+		a.jobCancel()
+	}
 	if a.cron != nil {
-		a.cron.Stop()
+		stopCtx := a.cron.Stop()
+		select {
+		case <-stopCtx.Done():
+		case <-time.After(15 * time.Second):
+			logger.SugaredLogger.Warn("等待运行中的定时任务结束超时")
+		}
 	}
 	a.agentMu.Lock()
 	if a.agentCancel != nil {
@@ -3458,7 +3496,7 @@ func (a *App) InitCronTasks() {
 	for _, t := range tasks {
 		taskCopy := t
 		entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-			err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+			err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 			if err != nil {
 				logger.SugaredLogger.Errorf("启动任务失败：%v %s", err, taskCopy.Name)
 				return
@@ -3495,7 +3533,7 @@ func (a *App) CreateCronTask(task *models.CronTask) string {
 	}
 	taskCopy := *task
 	entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-		err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+		err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 		if err != nil {
 			logger.SugaredLogger.Errorf("执行任务失败：%v %s", err, taskCopy.Name)
 			return
@@ -3518,7 +3556,7 @@ func (a *App) UpdateCronTask(task *models.CronTask) string {
 	}
 	taskCopy := *task
 	entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-		err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+		err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 		if err != nil {
 			logger.SugaredLogger.Errorf("执行任务失败：%v %s", err, taskCopy.Name)
 			return
@@ -3589,7 +3627,7 @@ func (a *App) EnableCronTask(id uint, enable bool) string {
 		if enable {
 			taskCopy := *task
 			entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-				err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+				err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 				if err != nil {
 					logger.SugaredLogger.Errorf("%s 执行任务失败：%v", taskCopy.Name, err)
 					return
@@ -3621,7 +3659,7 @@ func (a *App) ExecuteCronTaskNow(id uint) string {
 	}
 
 	tenant.Go(func() {
-		err := agent.NewCronTaskApi().ExecuteTask(a.ctx, task)
+		err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), task)
 		if err != nil {
 			logger.SugaredLogger.Errorf("执行任务失败：%v %s", err, task.Name)
 		}
@@ -3650,7 +3688,7 @@ func (a *App) GetCronTaskTypes() []lo.Tuple2[string, string] {
 //	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
 func (a *App) GenerateDailyReviewNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
 	tenant.Go(func() {
-		_, err := agent.NewDailyReviewApi().GenerateDailyReview(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
+		_, err := agent.NewDailyReviewApi().GenerateDailyReview(a.jobContext(), date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
 		if err != nil {
 			logger.SugaredLogger.Errorf("手动生成复盘报告失败：%v", err)
 		}
@@ -3691,7 +3729,7 @@ func (a *App) DeleteDailyReview(id uint) string {
 //	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
 func (a *App) GenerateMorningStrategyNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
 	tenant.Go(func() {
-		_, err := agent.NewMorningStrategyApi().GenerateMorningStrategy(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
+		_, err := agent.NewMorningStrategyApi().GenerateMorningStrategy(a.jobContext(), date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
 		if err != nil {
 			logger.SugaredLogger.Errorf("手动生成盘前策略失败：%v", err)
 		}

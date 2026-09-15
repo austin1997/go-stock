@@ -108,6 +108,16 @@ func (a *DailyReviewApi) GenerateDailyReview(ctx context.Context, date string, a
 	}
 	emitter.flush()
 
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			review.Status = "failed"
+			review.ErrorMessage = "已取消"
+			review.DurationMs = time.Since(start).Milliseconds()
+			db.Dao.Save(&review)
+			return nil, err
+		}
+	}
+
 	result := strings.TrimSpace(content.String())
 	generatedAt := time.Now()
 	if result == "" {

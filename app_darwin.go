@@ -38,6 +38,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// 设置全局 Wails 上下文，供 AI 工具修改分组/概念后向前端推送刷新事件
 	data.SetAppCtx(ctx)
+	a.initJobContext(ctx)
 
 	// 应用启动时自动创建已启用的定时任务
 	a.InitCronTasks()

@@ -105,6 +105,16 @@ func (a *MorningStrategyApi) GenerateMorningStrategy(ctx context.Context, date s
 	}
 	emitter.flush()
 
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			strategy.Status = "failed"
+			strategy.ErrorMessage = "已取消"
+			strategy.DurationMs = time.Since(start).Milliseconds()
+			db.Dao.Save(&strategy)
+			return nil, err
+		}
+	}
+
 	result := strings.TrimSpace(content.String())
 	generatedAt := time.Now()
 	if result == "" {

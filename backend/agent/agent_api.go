@@ -159,6 +159,12 @@ func (receiver StockAiAgent) ChatWithContext(ctx context.Context, question strin
 				close(ch)
 			}
 		}()
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				close(ch)
+				return
+			}
+		}
 
 		var sessionIDOverride string
 		var sysPromptOverride string
