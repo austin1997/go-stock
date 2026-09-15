@@ -3250,8 +3250,7 @@ func (a *App) FetchAiModels(baseUrl, apiKey, extraHeaders string) []string {
 		Data []modelItem `json:"data"`
 	}
 
-	client := data.SharedHTTPClient
-	client.SetBaseURL(baseUrl)
+	client := data.CreateHTTPClientWithTimeout(30 * time.Second)
 
 	req := client.R().
 		SetHeader("Authorization", "Bearer "+apiKey).
@@ -3260,7 +3259,7 @@ func (a *App) FetchAiModels(baseUrl, apiKey, extraHeaders string) []string {
 	if extra := data.BuildExtraHeaders(extraHeaders, ""); len(extra) > 0 {
 		req = req.SetHeaders(extra)
 	}
-	resp, err := req.Get("/models")
+	resp, err := req.Get(strings.TrimRight(baseUrl, "/") + "/models")
 	if err != nil {
 		logger.SugaredLogger.Errorf("FetchAiModels error: %v", err)
 		return []string{}
@@ -3310,8 +3309,7 @@ func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName, extraHeaders string) 
 		}
 		var detail modelDetail
 
-		client := data.SharedHTTPClient
-		client.SetBaseURL(baseUrl)
+		client := data.CreateHTTPClientWithTimeout(30 * time.Second)
 
 		req := client.R().
 			SetHeader("Authorization", "Bearer "+apiKey).
@@ -3320,7 +3318,7 @@ func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName, extraHeaders string) 
 		if extra := data.BuildExtraHeaders(extraHeaders, ""); len(extra) > 0 {
 			req = req.SetHeaders(extra)
 		}
-		resp, err := req.Get("/models/" + modelName)
+		resp, err := req.Get(strings.TrimRight(baseUrl, "/") + "/models/" + modelName)
 
 		if err == nil && !resp.IsError() && detail.ID != "" {
 			// 上下文窗口：优先 max_context_length，其次 context_length
