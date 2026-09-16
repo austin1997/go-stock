@@ -3299,6 +3299,10 @@ func (a *App) SaveAiAssistantSession(sessionId string, messages []models.AiAssis
 	return data.SaveAiAssistantSession(sessionId, messages)
 }
 
+// modelDiscoveryResponseLimit bounds decompressed provider responses before JSON
+// decoding, including bodies without a Content-Length header.
+const modelDiscoveryResponseLimit = 1 << 20 // 1 MiB
+
 // FetchAiModels
 //
 //	@Description: 根据接口地址与 apiKey 自动获取支持的模型列表（OpenAI/DeepSeek 兼容 /models 接口）
@@ -3324,6 +3328,7 @@ func (a *App) FetchAiModels(baseUrl, apiKey, extraHeaders string) []string {
 	client := data.CreateHTTPClientWithTimeout(30 * time.Second)
 
 	req := client.R().
+		SetResponseBodyLimit(modelDiscoveryResponseLimit).
 		SetHeader("Authorization", "Bearer "+apiKey).
 		SetHeader("Content-Type", "application/json").
 		SetResult(&respData)
@@ -3383,6 +3388,7 @@ func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName, extraHeaders string) 
 		client := data.CreateHTTPClientWithTimeout(30 * time.Second)
 
 		req := client.R().
+			SetResponseBodyLimit(modelDiscoveryResponseLimit).
 			SetHeader("Authorization", "Bearer "+apiKey).
 			SetHeader("Content-Type", "application/json").
 			SetResult(&detail)

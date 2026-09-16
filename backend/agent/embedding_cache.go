@@ -55,13 +55,15 @@ func wrapEmbedFuncWithCache(fn chromem.EmbeddingFunc, modelKey string) chromem.E
 	if fn == nil {
 		return nil
 	}
+	// collection 的 embedding 回调可能由未绑定租户的 worker 调用，创建时固定所属租户。
+	tenantID := tenant.UserID()
 	return func(ctx context.Context, text string) ([]float32, error) {
 		// 空文本不缓存（chromem-go 对空文本可能有特殊处理）
 		if text == "" {
 			return fn(ctx, text)
 		}
 
-		cacheKey := fmt.Sprintf("%d\x00%s\x00%s", tenant.UserID(), modelKey, text)
+		cacheKey := fmt.Sprintf("%d\x00%s\x00%s", tenantID, modelKey, text)
 
 		// 快路径：RLock 查缓存
 		embeddingCacheMu.RLock()

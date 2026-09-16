@@ -225,15 +225,16 @@ func TestEmbeddingCacheTenantIsolation(t *testing.T) {
 		atomic.AddInt64(&callCount, 1)
 		return []float32{float32(callCount)}, nil
 	}
-	wrapped := wrapEmbedFuncWithCache(mockEmbedFunc, "same-model")
-
+	// Each KB owns a callback created while its tenant is bound.
 	tenant.Bind(&tenant.Runtime{UserID: 1})
-	if _, err := wrapped(context.Background(), "same text"); err != nil {
+	wrapped1 := wrapEmbedFuncWithCache(mockEmbedFunc, "same-model")
+	if _, err := wrapped1(context.Background(), "same text"); err != nil {
 		t.Fatal(err)
 	}
 	tenant.Unbind()
 	tenant.Bind(&tenant.Runtime{UserID: 2})
-	if _, err := wrapped(context.Background(), "same text"); err != nil {
+	wrapped2 := wrapEmbedFuncWithCache(mockEmbedFunc, "same-model")
+	if _, err := wrapped2(context.Background(), "same text"); err != nil {
 		t.Fatal(err)
 	}
 	tenant.Unbind()

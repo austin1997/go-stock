@@ -139,8 +139,10 @@ func (a *DailyReviewApi) GenerateDailyReview(ctx context.Context, date string, a
 	}
 
 	logger.SugaredLogger.Infof("每日复盘报告生成完成：%s（耗时 %dms）", date, review.DurationMs)
-	// 同步保存到 AI 分析报告，供研究中心查看
-	go data.NewDeepSeekOpenAi(ctx, aiConfigId).SaveAIResponseResult("每日复盘", "每日复盘", result, "", prompt)
+	// 异步保存到当前租户的 AI 分析报告，供研究中心查看。
+	tenant.GoContext(ctx, func() {
+		data.NewDeepSeekOpenAi(ctx, aiConfigId).SaveAIResponseResult("每日复盘", "每日复盘", result, "", prompt)
+	})
 	a.emitEvent(ctx, date, review)
 	return &review, nil
 }

@@ -1,6 +1,7 @@
 package data
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -102,7 +103,9 @@ func fetchLhbSeatList(stockCode, date, reportName, sortColumn string) ([]models.
 		"client":      "WEB",
 		"filter":      fmt.Sprintf(`(SECURITY_CODE="%s")(TRADE_DATE='%s')`, stockCode, date),
 	}
-	resp, err := SharedHTTPClient.SetTimeout(time.Duration(15)*time.Second).R().
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := SharedHTTPClient.R().SetContext(ctx).
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("Referer", "https://data.eastmoney.com/stock/tradedetail.html").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
@@ -337,9 +340,23 @@ func buildHotMoneySeatIndex(f *HotMoneySeatFile) []hotMoneyIndexEntry {
 func storeHotMoneySeatIndex(idx []hotMoneyIndexEntry) {
 	id := tenant.UserID()
 	hotMoneySeatsMu.Lock()
+	defer hotMoneySeatsMu.Unlock()
+	storeHotMoneySeatIndexLocked(id, idx)
+}
+
+// storeHotMoneySeatIndexLocked requires hotMoneySeatsMu and invalidates only
+// summaries derived from this tenant's index (including desktop tenant 0).
+func storeHotMoneySeatIndexLocked(id uint, idx []hotMoneyIndexEntry) {
+	lhbDailySummaryMu.Lock()
+	defer lhbDailySummaryMu.Unlock()
 	hotMoneySeatIndexByTenant[id] = idx
 	hotMoneySeatsLoaded[id] = true
-	hotMoneySeatsMu.Unlock()
+	lhbDailySummaryGeneration[id]++
+	for key := range lhbDailySummaryCache {
+		if key.tenantID == id {
+			delete(lhbDailySummaryCache, key)
+		}
+	}
 }
 
 // loadHotMoneySeatIndex 懒加载游资名录索引：优先读外置 JSON（data/hot_money_seats.json），
@@ -367,8 +384,7 @@ func loadHotMoneySeatIndex() []hotMoneyIndexEntry {
 		idx = buildHotMoneySeatIndex(&f)
 		remote = f.RemoteURL
 	}
-	hotMoneySeatIndexByTenant[id] = idx
-	hotMoneySeatsLoaded[id] = true
+	storeHotMoneySeatIndexLocked(id, idx)
 	hotMoneySeatsMu.Unlock()
 	if remote != "" {
 		tenant.Go(func() { _ = RefreshHotMoneySeats(remote) })
@@ -468,7 +484,9 @@ func RefreshHotMoneySeats(url string) error {
 	if rawURL == "" {
 		return fmt.Errorf("远程名录 URL 为空")
 	}
-	resp, err := SharedHTTPClient.SetTimeout(time.Duration(15)*time.Second).R().
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := SharedHTTPClient.R().SetContext(ctx).
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
 		Get(rawURL)
 	if err != nil {
@@ -582,9 +600,15 @@ func (receiver LhbSeatApi) GetLhbSeatDetailToMarkdown(stockCode, date string) st
 // ---------- 当日游资/机构动向汇总 ----------
 
 // lhbDailySummaryCache 当日汇总缓存（龙虎榜收盘后数据不变，10 分钟缓存避免重复全量抓取）
+type lhbDailySummaryKey struct {
+	tenantID uint
+	date     string
+}
+
 var (
-	lhbDailySummaryMu    sync.Mutex
-	lhbDailySummaryCache = map[string]*models.LhbDailySummary{}
+	lhbDailySummaryMu         sync.Mutex
+	lhbDailySummaryCache      = map[lhbDailySummaryKey]*models.LhbDailySummary{}
+	lhbDailySummaryGeneration = map[uint]uint64{}
 )
 
 // lhbBillboardStock 当日上榜个股（从龙虎榜榜单接口取基础信息）
@@ -608,7 +632,9 @@ func fetchLhbBillboardStocks(date string) []lhbBillboardStock {
 		"client":      "WEB",
 		"filter":      fmt.Sprintf("(TRADE_DATE<='%s')(TRADE_DATE>='%s')", date, date),
 	}
-	resp, err := SharedHTTPClient.SetTimeout(time.Duration(15)*time.Second).R().
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := SharedHTTPClient.R().SetContext(ctx).
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("Referer", "https://data.eastmoney.com/stock/tradedetail.html").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
@@ -643,11 +669,17 @@ func (receiver LhbSeatApi) GetLhbDailySummary(date string) *models.LhbDailySumma
 	if date == "" {
 		date = LatestLhbTradeDate()
 	}
+	key := lhbDailySummaryKey{tenantID: tenant.UserID(), date: date}
+	// Finish lazy initialization before capturing the index generation. Updates
+	// during HTTP work invalidate it, so old or mixed classifications cannot
+	// repopulate the cache after a save/reset/refresh.
+	loadHotMoneySeatIndex()
 	lhbDailySummaryMu.Lock()
-	if c, ok := lhbDailySummaryCache[date]; ok {
+	if c, ok := lhbDailySummaryCache[key]; ok {
 		lhbDailySummaryMu.Unlock()
 		return c
 	}
+	generation := lhbDailySummaryGeneration[key.tenantID]
 	lhbDailySummaryMu.Unlock()
 
 	summary := &models.LhbDailySummary{Date: date}
@@ -667,14 +699,14 @@ func (receiver LhbSeatApi) GetLhbDailySummary(date string) *models.LhbDailySumma
 	var wg sync.WaitGroup
 	for i, s := range stocks {
 		wg.Add(1)
-		go func(i int, s lhbBillboardStock) {
+		tenant.Go(func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			buys, _ := fetchLhbSeatList(s.StockCode, date, "RPT_BILLBOARD_DAILYDETAILSBUY", "BUY")
 			sells, _ := fetchLhbSeatList(s.StockCode, date, "RPT_BILLBOARD_DAILYDETAILSSELL", "SELL")
 			results[i] = stockSeats{stock: s, buys: buys, sells: sells}
-		}(i, s)
+		})
 	}
 	wg.Wait()
 
@@ -778,12 +810,20 @@ func (receiver LhbSeatApi) GetLhbDailySummary(date string) *models.LhbDailySumma
 
 	// 缓存 10 分钟（当日龙虎榜收盘后数据不再变化）
 	lhbDailySummaryMu.Lock()
-	lhbDailySummaryCache[date] = summary
+	if lhbDailySummaryGeneration[key.tenantID] != generation {
+		lhbDailySummaryMu.Unlock()
+		return summary
+	}
+	lhbDailySummaryCache[key] = summary
 	lhbDailySummaryMu.Unlock()
 	go func() {
 		time.Sleep(10 * time.Minute)
 		lhbDailySummaryMu.Lock()
-		delete(lhbDailySummaryCache, date)
+		// A reload or a concurrent fetch may have replaced this entry. An old
+		// expiry must never remove the replacement's independent cache lifetime.
+		if lhbDailySummaryCache[key] == summary {
+			delete(lhbDailySummaryCache, key)
+		}
 		lhbDailySummaryMu.Unlock()
 	}()
 	return summary
