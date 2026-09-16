@@ -40,23 +40,48 @@ func EnsureWorkspaceDirs(userID uint) error {
 	return nil
 }
 
-func defaultSkillsSource() string {
-	if env := os.Getenv("GO_STOCK_ROOT_DIR"); env != "" {
-		p := filepath.Join(env, "skills")
+func firstExistingDir(paths ...string) string {
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
 		if st, err := os.Stat(p); err == nil && st.IsDir() {
 			return p
 		}
-	}
-	if exe, err := os.Executable(); err == nil && exe != "" {
-		p := filepath.Join(filepath.Dir(exe), "skills")
-		if st, err := os.Stat(p); err == nil && st.IsDir() {
-			return p
-		}
-	}
-	if st, err := os.Stat("skills"); err == nil && st.IsDir() {
-		return "skills"
 	}
 	return ""
+}
+
+func envRootJoin(name string) string {
+	if env := os.Getenv("GO_STOCK_ROOT_DIR"); env != "" {
+		return filepath.Join(env, name)
+	}
+	return ""
+}
+
+func exeDirJoin(name string) string {
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(exe), name)
+}
+
+// builtinSkillsSource 只拷贝不可变模板，避免把卷挂载/旧版 skills/ 里的私有技能发给每个新用户。
+func builtinSkillsSource() string {
+	return firstExistingDir(
+		envRootJoin("skills-default"),
+		exeDirJoin("skills-default"),
+		"skills-default",
+	)
+}
+
+// legacySkillsSource 旧版单用户或主机挂载的 skills/，只允许迁给第一个用户。
+func legacySkillsSource() string {
+	return firstExistingDir(
+		envRootJoin("skills"),
+		"skills",
+	)
 }
 
 func dirEmpty(path string) bool {
@@ -70,7 +95,7 @@ func dirEmpty(path string) bool {
 }
 
 func CopyDefaultSkills(userID uint) error {
-	src := defaultSkillsSource()
+	src := builtinSkillsSource()
 	if src == "" {
 		return nil
 	}
@@ -102,7 +127,11 @@ func MigrateLegacyIfNeeded(userID uint) error {
 	dstDB := StockDBPath(userID)
 	_, legacyErr := os.Stat(legacyDB)
 	_, dstErr := os.Stat(dstDB)
-	if legacyErr != nil && dstErr != nil {
+	legacyMemory := false
+	if st, err := os.Stat("memory"); err == nil && st.IsDir() {
+		legacyMemory = true
+	}
+	if legacyErr != nil && dstErr != nil && !legacyMemory && legacySkillsSource() == "" {
 		return nil
 	}
 	if err := EnsureWorkspaceDirs(userID); err != nil {
@@ -122,10 +151,12 @@ func MigrateLegacyIfNeeded(userID uint) error {
 			}
 		}
 	}
-	if st, err := os.Stat("skills"); err == nil && st.IsDir() {
+	if src := legacySkillsSource(); src != "" {
 		dst := filepath.Join(WorkspaceRoot(userID), "skills")
-		if dirEmpty(dst) {
-			if err := copyDir("skills", dst); err != nil {
+		absSrc, _ := filepath.Abs(src)
+		absDst, _ := filepath.Abs(dst)
+		if absSrc != absDst && dirEmpty(dst) {
+			if err := copyDir(src, dst); err != nil {
 				_ = os.RemoveAll(dst)
 				return fmt.Errorf("migrate skills: %w", err)
 			}

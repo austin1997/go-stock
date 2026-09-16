@@ -37,10 +37,10 @@ func (item *userRuntime) markStopped() {
 	item.mu.Unlock()
 }
 
-func (item *userRuntime) snapshot() (app *App, rt *tenant.Runtime, err error, stopped bool) {
+func (item *userRuntime) snapshot() (app *App, rt *tenant.Runtime, gdb *gorm.DB, err error, stopped bool) {
 	item.mu.Lock()
 	defer item.mu.Unlock()
-	return item.app, item.rt, item.err, item.stopped
+	return item.app, item.rt, item.gdb, item.err, item.stopped
 }
 
 func (item *userRuntime) setErr(err error) {
@@ -115,6 +115,8 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 		app.domReady(ctx)
 
 		item.mu.Lock()
+		item.gdb = prepared.gdb
+		item.rt = prepared.rt
 		if item.stopped {
 			item.mu.Unlock()
 			app.StopBackground()
@@ -122,8 +124,6 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 			return
 		}
 		item.app = app
-		item.gdb = prepared.gdb
-		item.rt = prepared.rt
 		item.mu.Unlock()
 
 		go func() {
@@ -133,7 +133,7 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 		}()
 		logger.SugaredLogger.Infof("user workspace ready: id=%d root=%s", userID, prepared.rt.Root)
 	})
-	app, _, err, stopped := item.snapshot()
+	app, _, _, err, stopped := item.snapshot()
 	if err != nil || stopped || app == nil {
 		m.mu.Lock()
 		if m.items[userID] == item {
@@ -187,18 +187,29 @@ func (m *runtimeManager) halt(item *userRuntime, shutdown bool, ctx context.Cont
 	item.once.Do(func() {
 		item.setErr(errUserDisabled)
 	})
-	app, rt, _, _ := item.snapshot()
-	if app == nil {
-		return
-	}
+	app, rt, gdb, _, _ := item.snapshot()
 	if rt != nil {
 		tenant.Bind(rt)
 		defer tenant.Unbind()
 	}
-	app.StopBackground()
-	if shutdown {
-		app.shutdown(ctx)
+	if app != nil {
+		app.StopBackground()
+		if shutdown {
+			app.shutdown(ctx)
+		}
 	}
+	closeTenantDB(gdb)
+}
+
+func closeTenantDB(gdb *gorm.DB) {
+	if gdb == nil {
+		return
+	}
+	sqlDB, err := gdb.DB()
+	if err != nil {
+		return
+	}
+	_ = sqlDB.Close()
 }
 
 type preparedWorkspace struct {

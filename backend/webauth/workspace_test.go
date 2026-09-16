@@ -169,6 +169,89 @@ func TestMigrateLegacyStopsWhenCopyFails(t *testing.T) {
 	}
 }
 
+func TestCopyDefaultSkillsIgnoresLegacySkillsDir(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("GO_STOCK_ROOT_DIR", dir)
+	if err := os.MkdirAll(filepath.Join("skills", "owner-secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("skills", "owner-secret", "SKILL.md"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join("skills-default", "public"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("skills-default", "public", "SKILL.md"), []byte("public"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureWorkspaceDirs(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := CopyDefaultSkills(2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(WorkspaceRoot(2), "skills", "owner-secret", "SKILL.md")); err == nil {
+		t.Fatal("legacy/user skills must not seed other tenants")
+	}
+	got, err := os.ReadFile(filepath.Join(WorkspaceRoot(2), "skills", "public", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "public" {
+		t.Fatalf("builtin skill = %q", got)
+	}
+}
+
+func TestMigrateLegacySkillsOnlyFirstUser(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("WEB_ALLOW_REGISTER", "")
+	t.Setenv("WEB_SETUP_SECRET", "setup-secret")
+	t.Setenv("GO_STOCK_ROOT_DIR", dir)
+	if err := Init(filepath.Join(dir, "auth.db")); err != nil {
+		t.Fatal(err)
+	}
+	first, err := Register("alice", "secret1", "setup-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := CreateUser("bob", "secret2", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join("skills", "owner-secret"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("skills", "owner-secret", "SKILL.md"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = os.Remove(filepath.Join("data", "stock.db.migrated"))
+
+	if err := EnsureWorkspaceDirs(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacyIfNeeded(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(WorkspaceRoot(second.ID), "skills", "owner-secret", "SKILL.md")); err == nil {
+		t.Fatal("second user must not receive legacy skills")
+	}
+	if err := EnsureWorkspaceDirs(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateLegacyIfNeeded(first.ID); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(filepath.Join(WorkspaceRoot(first.ID), "skills", "owner-secret", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "secret" {
+		t.Fatalf("first user skill = %q", got)
+	}
+}
+
 func TestEnforceTmpQuotaEvictsOldest(t *testing.T) {
 	dir := t.TempDir()
 	for i := 0; i < MaxUserTmpFiles; i++ {

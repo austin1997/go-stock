@@ -113,6 +113,46 @@ func TestTimeoutRoundTripperReadsBodyWithinTimeout(t *testing.T) {
 	}
 }
 
+func TestTimeoutRoundTripperHonorsCallerCancelInWebMode(t *testing.T) {
+	webmode.Enable()
+	t.Cleanup(webmode.Disable)
+	tenant.Bind(&tenant.Runtime{UserID: 1, HTTPTimeout: 3 * time.Second})
+	t.Cleanup(tenant.Unbind)
+
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &timeoutRoundTripper{base: http.DefaultTransport}
+	done := make(chan error, 1)
+	go func() {
+		_, err := rt.RoundTrip(req)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server should have received the request")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected caller cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RoundTrip ignored caller cancellation")
+	}
+}
+
 func TestCreateHTTPClientWithTimeoutDoesNotMutateSharedClient(t *testing.T) {
 	webmode.Enable()
 	t.Cleanup(webmode.Disable)

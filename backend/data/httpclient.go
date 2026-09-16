@@ -69,11 +69,7 @@ func (t *timeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		return t.base.RoundTrip(req)
 	}
 	parent := req.Context()
-	if webmode.Enabled() {
-		// 网页版忽略 Client.Timeout / SetTimeout 带来的进程级 deadline，
-		// 只按当前租户 CrawlTimeOut 限制，避免租户互相覆盖。
-		parent = context.WithoutCancel(parent)
-	} else if deadline, ok := parent.Deadline(); ok {
+	if deadline, ok := parent.Deadline(); ok {
 		if rem := time.Until(deadline); rem > 0 && rem < d {
 			d = rem
 		}
@@ -111,12 +107,12 @@ func init() {
 
 	sharedHTTPClient = &http.Client{
 		Transport: &timeoutRoundTripper{base: sharedTransport},
-		Timeout:   300 * time.Second,
+		Timeout:   0,
 	}
 
 	SharedHTTPClient = resty.NewWithClient(sharedHTTPClient).
 		SetRetryCount(0).
-		SetTimeout(300 * time.Second)
+		SetTimeout(0)
 }
 
 func resolveHTTPProxy(req *http.Request) (*url.URL, error) {
