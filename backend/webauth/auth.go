@@ -316,6 +316,18 @@ func GetUser(id uint) (*User, error) {
 	return u, nil
 }
 
+// RequireActiveUser 确认账号存在且未被禁用，供网页版重建 runtime 前复核。
+func RequireActiveUser(id uint) error {
+	u, err := GetUser(id)
+	if err != nil {
+		return err
+	}
+	if u.Disabled {
+		return ErrUserDisabled
+	}
+	return nil
+}
+
 // BootstrapAdminFromEnv 若设置 WEB_ADMIN_USER / WEB_ADMIN_PASSWORD 则确保该管理员存在。
 func BootstrapAdminFromEnv() (*User, error) {
 	username := strings.TrimSpace(os.Getenv("WEB_ADMIN_USER"))

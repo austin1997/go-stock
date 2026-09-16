@@ -127,3 +127,32 @@ func TestBootstrapAdminUpdatesExistingPassword(t *testing.T) {
 		t.Fatalf("new password should work: %v", err)
 	}
 }
+
+func TestRequireActiveUserRejectsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WEB_SETUP_SECRET", "setup-secret")
+	t.Setenv("WEB_ADMIN_USER", "")
+	t.Setenv("WEB_ADMIN_PASSWORD", "")
+	if err := Init(filepath.Join(dir, "auth.db")); err != nil {
+		t.Fatal(err)
+	}
+	u, err := Register("alice", "secret1", "setup-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireActiveUser(u.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetDisabled(u.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireActiveUser(u.ID); err != ErrUserDisabled {
+		t.Fatalf("want disabled, got %v", err)
+	}
+	if err := SetDisabled(u.ID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := RequireActiveUser(u.ID); err != nil {
+		t.Fatal(err)
+	}
+}

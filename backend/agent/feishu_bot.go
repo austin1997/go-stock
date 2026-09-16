@@ -12,6 +12,7 @@ import (
 
 	"go-stock/backend/data"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 
 	"github.com/cloudwego/eino/schema"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -44,6 +45,7 @@ type FeishuBot struct {
 	memory      bool   // 是否启用多轮记忆（默认关闭：群聊场景历史对话意义有限且挤占上下文）
 	agentMode   string // Agent 模式：react/plan_execute/deepagents（空=自动判断）
 	running     bool
+	rt          *tenant.Runtime
 }
 
 // NewFeishuBot 根据当前配置创建机器人实例；配置缺失返回 nil
@@ -75,7 +77,19 @@ func NewFeishuBot() *FeishuBot {
 		enableTools: cfg.FeishuBotEnableTools,
 		memory:      cfg.FeishuBotMemoryEnable,
 		agentMode:   cfg.FeishuBotAgentMode,
+		rt:          tenant.Capture(),
 	}
+}
+
+func (b *FeishuBot) runWithTenant(fn func()) {
+	if fn == nil {
+		return
+	}
+	if b != nil && b.rt != nil {
+		tenant.Bind(b.rt)
+		defer tenant.Unbind()
+	}
+	fn()
 }
 
 // Start 启动长连接（阻塞，需 go 调用）。ctx 退出时方法返回。
@@ -91,7 +105,7 @@ func (b *FeishuBot) Start(ctx context.Context) error {
 		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 			// 飞书要求事件回调 3 秒内返回，否则会触发重试。
 			// 这里立即 return nil，AI 处理放到 goroutine 异步执行。
-			go b.processEvent(ctx, event)
+			go b.runWithTenant(func() { b.processEvent(ctx, event) })
 			return nil
 		})
 

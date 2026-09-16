@@ -50,22 +50,43 @@ func (item *userRuntime) setErr(err error) {
 }
 
 type runtimeManager struct {
-	mu    sync.Mutex
-	items map[uint]*userRuntime
+	mu      sync.Mutex
+	items   map[uint]*userRuntime
+	revoked map[uint]struct{}
 }
 
 func newRuntimeManager() *runtimeManager {
-	return &runtimeManager{items: map[uint]*userRuntime{}}
+	return &runtimeManager{
+		items:   map[uint]*userRuntime{},
+		revoked: map[uint]struct{}{},
+	}
 }
 
-func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
+func (m *runtimeManager) getItem(userID uint) (*userRuntime, error) {
+	if err := webauth.RequireActiveUser(userID); err != nil {
+		return nil, err
+	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, revoked := m.revoked[userID]; revoked {
+		if err := webauth.RequireActiveUser(userID); err != nil {
+			return nil, err
+		}
+		delete(m.revoked, userID)
+	}
 	item, ok := m.items[userID]
 	if !ok {
 		item = &userRuntime{userID: userID}
 		m.items[userID] = item
 	}
-	m.mu.Unlock()
+	return item, nil
+}
+
+func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
+	item, err := m.getItem(userID)
+	if err != nil {
+		return nil, err
+	}
 
 	item.once.Do(func() {
 		item.mu.Lock()
@@ -73,6 +94,10 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 		item.mu.Unlock()
 		if stopped {
 			item.setErr(errUserDisabled)
+			return
+		}
+		if err := webauth.RequireActiveUser(userID); err != nil {
+			item.setErr(err)
 			return
 		}
 
@@ -125,6 +150,10 @@ func (m *runtimeManager) get(userID uint) (*userRuntime, error) {
 
 func (m *runtimeManager) stop(userID uint) {
 	m.mu.Lock()
+	if m.revoked == nil {
+		m.revoked = map[uint]struct{}{}
+	}
+	m.revoked[userID] = struct{}{}
 	item := m.items[userID]
 	if item != nil {
 		item.markStopped()

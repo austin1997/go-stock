@@ -206,7 +206,7 @@ func CreateHTTPClientWithTimeout(timeout time.Duration) *resty.Client {
 	httpConfigMutex.RUnlock()
 
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: &timeoutRoundTripper{base: transport},
 		Timeout:   timeout,
 	}
 

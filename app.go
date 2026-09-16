@@ -2230,18 +2230,15 @@ func (a *App) startFeishuBot() error {
 		return fmt.Errorf("请先在设置中填写飞书 App ID、App Secret，并选择 AI 配置")
 	}
 
-	ctx := context.Background()
-	if a.ctx != nil {
-		ctx = a.ctx
-	}
+	ctx := a.jobContext()
 	a.feishuBot = bot
 
-	go func() {
+	tenant.Go(func() {
 		defer PanicHandler()
 		if err := bot.Start(ctx); err != nil {
 			logger.SugaredLogger.Errorf("feishu bot start error: %v", err)
 		}
-	}()
+	})
 
 	logger.SugaredLogger.Infof("feishu bot started")
 	return nil

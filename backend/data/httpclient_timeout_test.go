@@ -112,3 +112,19 @@ func TestTimeoutRoundTripperReadsBodyWithinTimeout(t *testing.T) {
 		t.Fatalf("body=%q", body)
 	}
 }
+
+func TestCreateHTTPClientWithTimeoutDoesNotMutateSharedClient(t *testing.T) {
+	webmode.Enable()
+	t.Cleanup(webmode.Disable)
+	tenant.Bind(&tenant.Runtime{UserID: 1, ProxyOn: true, ProxyURL: "http://127.0.0.1:9"})
+	t.Cleanup(tenant.Unbind)
+
+	beforeTimeout := SharedHTTPClient.GetClient().Timeout
+	c := CreateHTTPClientWithTimeout(3 * time.Second)
+	if c == SharedHTTPClient {
+		t.Fatal("expected a request-local client")
+	}
+	if SharedHTTPClient.GetClient().Timeout != beforeTimeout {
+		t.Fatal("SharedHTTPClient timeout should stay unchanged")
+	}
+}
