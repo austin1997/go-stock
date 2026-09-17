@@ -1,6 +1,7 @@
 package webauth
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -13,14 +14,43 @@ import (
 )
 
 const maxAuthJSONBytes int64 = 16 << 10
+const authBodyReadTimeout = 15 * time.Second
+
+func readAuthBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
+	controller := http.NewResponseController(w)
+	if err := controller.SetReadDeadline(time.Now().Add(authBodyReadTimeout)); err != nil {
+		// Recorders and other in-memory writers do not support deadlines.
+		if !errors.Is(err, http.ErrNotSupported) {
+			return nil, err
+		}
+	} else {
+		defer controller.SetReadDeadline(time.Time{})
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxAuthJSONBytes)
+	// Consume the entire bounded body before clearing the deadline. A decoder
+	// alone can stop at '}' and leave net/http draining a trickling suffix.
+	return io.ReadAll(r.Body)
+}
 
 func decodeAuthJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	if r.Body == nil {
 		writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return false
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxAuthJSONBytes)
-	if err := json.NewDecoder(r.Body).Decode(dst); err != nil {
+	body, err := readAuthBody(w, r)
+	if err != nil {
+		// Never let net/http drain an incomplete body after the scoped deadline
+		// has been cleared, including malformed and oversized requests.
+		w.Header().Set("Connection", "close")
+		code, message := http.StatusBadRequest, "invalid json"
+		var timeout net.Error
+		if errors.As(err, &timeout) && timeout.Timeout() {
+			code, message = http.StatusRequestTimeout, "request body timeout"
+		}
+		writeAuthJSON(w, code, map[string]any{"error": message})
+		return false
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(dst); err != nil {
 		writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return false
 	}
@@ -172,15 +202,14 @@ func HandleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxAuthJSONBytes)
 	if !loginLimiter.Allow(clientIP(r)) {
-		_, _ = io.Copy(io.Discard, r.Body)
+		// Reject without draining an untrusted body or reusing its connection.
+		w.Header().Set("Connection", "close")
 		writeAuthJSON(w, http.StatusTooManyRequests, map[string]any{"error": "登录尝试过多，请稍后再试"})
 		return
 	}
 	var body loginBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeAuthJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+	if !decodeAuthJSON(w, r, &body) {
 		return
 	}
 	u, err := Authenticate(body.Username, body.Password)

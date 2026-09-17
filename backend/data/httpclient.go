@@ -158,8 +158,8 @@ func UpdateHTTPClientTimeout(timeout time.Duration) {
 	httpConfigMutex.Lock()
 	currentTimeout = timeout
 	httpConfigMutex.Unlock()
-	sharedHTTPClient.Timeout = timeout
-	SharedHTTPClient.SetTimeout(timeout)
+	// timeoutRoundTripper reads currentTimeout under the same lock.
+	// Keep http.Client immutable even while desktop requests are in flight.
 }
 
 func parseProxyURL(proxyURL string) *url.URL {
@@ -197,16 +197,16 @@ func ConfigureFromSettings(config *SettingConfig) {
 }
 
 func CreateHTTPClientWithTimeout(timeout time.Duration) *resty.Client {
-	httpConfigMutex.RLock()
-	transport := sharedTransport
-	httpConfigMutex.RUnlock()
+	return clientWithTimeout(SharedHTTPClient, timeout)
+}
 
-	httpClient := &http.Client{
-		Transport: &timeoutRoundTripper{base: transport},
-		Timeout:   timeout,
-	}
+// clientWithTimeout shares the connection pool, never the mutable http.Client.
+// Caller contexts and the transport's tenant timeout still bound each request.
+func clientWithTimeout(client *resty.Client, timeout time.Duration) *resty.Client {
+	httpClient := *client.GetClient()
+	httpClient.Timeout = timeout
 
-	return resty.NewWithClient(httpClient).
+	return resty.NewWithClient(&httpClient).
 		SetTimeout(timeout).
 		SetRetryCount(0)
 }

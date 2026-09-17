@@ -4393,7 +4393,7 @@ func (a *App) TestMCPServer(id uint) string {
 }
 
 // StartMCPOAuth 启动 MCP 服务器的 OAuth 授权流程：
-// 后端完成元数据发现/客户端注册/loopback 监听，并自动打开系统浏览器。
+// 后端完成元数据发现/客户端注册；桌面用 loopback，Web 用 WEB_PUBLIC_ORIGIN 的共享 HTTP 回调。
 // 授权结果通过服务器状态（status/testResult）反馈，前端刷新列表查看。
 func (a *App) StartMCPOAuth(id uint) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

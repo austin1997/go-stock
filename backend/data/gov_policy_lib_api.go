@@ -100,7 +100,7 @@ func (g GovPolicyLibApi) loadGovPolicyDeptNames() []string {
 	params.Set("sortType", "1")
 	params.Set("p", "1")
 	params.Set("n", "1")
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		SetHeader("Referer", "https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary").
 		SetQueryParamsFromValues(params).
@@ -228,7 +228,7 @@ func (g GovPolicyLibApi) SearchGovPolicyLibrary(keyword, searchField, department
 		params.Set("type", "gwyzcwjk")
 	}
 
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		SetHeader("Referer", "https://sousuo.www.gov.cn/zcwjk/policyDocumentLibrary").
 		SetQueryParamsFromValues(params).

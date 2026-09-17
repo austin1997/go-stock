@@ -56,7 +56,7 @@ func fetchBKConstituentsPage(bkCode string, page, pageSize int) (*bkConstituents
 	for _, host := range bkConstituentsHosts {
 		url := fmt.Sprintf("%s/api/qt/clist/get?pn=%d&pz=%d&po=1&np=1&fltt=2&invt=2&fid=f62&fs=b:%s&fields=f12,f13,f14,f2,f3,f4,f5,f6,f8,f10,f20,f21,f23,f62,f184&_=_%d",
 			host, page, pageSize, bkCode, time.Now().UnixMilli())
-		resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+		resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 			SetHeader("Referer", "https://quote.eastmoney.com/center/boardlist.html").
 			SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36").
 			Get(url)

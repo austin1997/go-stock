@@ -23,6 +23,7 @@ import (
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
 	"go-stock/backend/tenant"
+	"go-stock/backend/webmode"
 
 	"gorm.io/gorm"
 )
@@ -322,6 +323,9 @@ func randomState() (string, error) {
 // StartOAuth 启动 OAuth 授权：发现元数据 → （复用或新建）客户端注册 →
 // 起 loopback HTTP 服务等回调 → 返回授权 URL（调用方拉起系统浏览器）。
 func (a *MCPServerApi) StartOAuth(ctx context.Context, id uint) (string, error) {
+	if webmode.Enabled() {
+		return a.startWebOAuth(ctx, id)
+	}
 	server, err := a.GetByID(id)
 	if err != nil {
 		return "", err

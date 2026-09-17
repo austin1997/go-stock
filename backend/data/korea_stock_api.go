@@ -70,7 +70,7 @@ type naverChartItem struct {
 func fetchNaverChart(symbol, timeframe string, count int) (*naverChartXML, error) {
 	reqURL := fmt.Sprintf("https://fchart.stock.naver.com/sise.nhn?symbol=%s&timeframe=%s&count=%d&requestType=0",
 		symbol, timeframe, count)
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36").
 		SetHeader("Referer", "https://finance.naver.com").
 		Get(reqURL)

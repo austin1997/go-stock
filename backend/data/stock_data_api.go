@@ -1525,7 +1525,7 @@ func (receiver StockDataApi) GetStockMinutePriceData(stockCode string) (*[]Minut
 	}
 	//logger.SugaredLogger.Infof("GetStockMinutePriceData url:%s", url)
 	res := make(map[string]interface{})
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "web.ifzq.gtimg.cn").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(url)
@@ -1577,7 +1577,7 @@ func (receiver StockDataApi) GetStockMinutePriceData(stockCode string) (*[]Minut
 func (receiver StockDataApi) GetKLineData(stockCode string, kLineType string, days int64) *[]KLineData {
 	url := fmt.Sprintf("http://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData?symbol=%s&scale=%s&ma=yes&datalen=%d", stockCode, kLineType, days)
 	K := &[]KLineData{}
-	_, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	_, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "quotes.sina.cn").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		SetResult(K).
@@ -1599,7 +1599,7 @@ func (receiver StockDataApi) GetHK_KLineData(stockCode string, kLineType string,
 	//logger.SugaredLogger.Infof("url:%s", url)
 	K := &[]KLineData{}
 	res := make(map[string]interface{})
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "web.ifzq.gtimg.cn").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(url)
@@ -1645,7 +1645,7 @@ func (receiver StockDataApi) GetHK_KLineData(stockCode string, kLineType string,
 func getSinaStockInfo(receiver StockDataApi, page, pageSize int) *[]models.SinaStockInfo {
 	infos := &[]models.SinaStockInfo{}
 	url := "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/Market_Center.getHKStockData?page=%d&num=%d&sort=symbol&asc=1&node=qbgg_hk&_s_r_a=init"
-	_, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).SetProxy("http://localhost:10809").R().
+	_, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).SetProxy("http://localhost:10809").R().
 		SetHeader("Host", "vip.stock.finance.sina.com.cn").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		SetResult(infos).
@@ -1671,7 +1671,7 @@ func (receiver StockDataApi) getDCStockInfo(market string, page, pageSize int) {
 	url := "https://push2.eastmoney.com/api/qt/clist/get?np=1&fltt=1&invt=2&cb=data&fs=%s&fields=f12,f13,f14,f1,f2,f4,f3,f152,f5,f6,f7,f15,f18,f16,f17,f10,f8,f9,f23,f100,f265&fid=f3&pn=%d&pz=%d&po=1&dect=1&wbp2u=|0|0|0|web&_=%d"
 	sprintfUrl := fmt.Sprintf(url, fs, page, pageSize, time.Now().UnixMilli())
 	//logger.SugaredLogger.Infof("page:%d  url:%s", page, sprintfUrl)
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "push2.eastmoney.com").
 		SetHeader("Referer", "https://quote.eastmoney.com/center/gridlist.html").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:146.0) Gecko/20100101 Firefox/146.0").
@@ -1799,7 +1799,7 @@ func DCToTsCode(dcCode string) string {
 
 func (receiver StockDataApi) GetHKStockInfo(pageSize int) {
 	url := "https://stock.gtimg.cn/data/hk_rank.php?board=main_all&metric=price&pageSize=%d&reqPage=1&order=desc&var_name=list_data"
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "stock.gtimg.cn").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(fmt.Sprintf(url, pageSize))
@@ -1831,7 +1831,7 @@ func (receiver StockDataApi) GetHKStockInfo(pageSize int) {
 		for page > page_count {
 			urlx := fmt.Sprintf("https://stock.gtimg.cn/data/hk_rank.php?board=main_all&metric=price&pageSize=%d&reqPage=%d&order=desc&var_name=list_data", pageSize, page)
 			//logger.SugaredLogger.Infof("url:%s", urlx)
-			resp, err = receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+			resp, err = clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 				SetHeader("Host", "stock.gtimg.cn").
 				SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 				Get(urlx)
@@ -1888,7 +1888,7 @@ func (receiver StockDataApi) GetCommonKLineData(stockCode string, kLineType stri
 	//logger.SugaredLogger.Infof("url:%s", url)
 	K := &[]KLineData{}
 	res := make(map[string]interface{})
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "web.ifzq.gtimg.cn").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(url)
@@ -2073,7 +2073,7 @@ func (receiver StockDataApi) GetStockMoneyData() models.StockMoneyDataResp {
 
 	var resData models.StockMoneyDataResp
 	url := "https://push2.eastmoney.com/api/qt/clist/get?cb=data&fid=f62&po=1&pz=50&pn=1&np=1&fltt=2&invt=2&ut=8dec03ba335b81bf4ebdf7b29ec27d15&fs=m:0+t:6+f:!2,m:0+t:13+f:!2,m:0+t:80+f:!2,m:1+t:2+f:!2,m:1+t:23+f:!2,m:0+t:7+f:!2,m:1+t:3+f:!2&fields=f12,f14,f2,f3,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87,f204,f205,f124,f1,f13,f100,f265"
-	req := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut) * time.Second).R()
+	req := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R()
 
 	setEastMoneyKlineBrowserHeaders(req, "https://quote.eastmoney.com")
 	// 使用缓存的 Cookie，pageURL 参数传空字符串由函数内部使用默认值
@@ -2132,7 +2132,7 @@ func (receiver StockDataApi) GetMutualTop10Deal(mutualType, tradeDate string, pa
 	url := fmt.Sprintf("https://datacenter-web.eastmoney.com/web/api/data/v1/get?callback=data&sortColumns=RANK&sortTypes=1&pageSize=%d&pageNumber=%d&reportName=RPT_MUTUAL_TOP10DEAL&columns=ALL&source=WEB&client=WEB&filter=%s&_=%d",
 		pageSize, page, encodedFilter, time.Now().UnixMilli())
 
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(url)
@@ -2186,7 +2186,7 @@ func (receiver StockDataApi) GetStockConceptInfo(stockCode string) models.StockC
 	url := "https://datacenter.eastmoney.com/securities/api/data/v1/get?reportName=RPT_F10_CORETHEME_BOARDTYPE&columns=SECUCODE%2CSECURITY_CODE%2CSECURITY_NAME_ABBR%2CNEW_BOARD_CODE%2CBOARD_NAME%2CSELECTED_BOARD_REASON%2CIS_PRECISE%2CBOARD_RANK%2CBOARD_YIELD%2CDERIVE_BOARD_CODE&quoteColumns=f3~05~NEW_BOARD_CODE~BOARD_YIELD&filter=(SECUCODE%3D%22" + stockCode + "%22)(IS_PRECISE%3D%221%22)&pageNumber=1&pageSize=&sortTypes=1&sortColumns=BOARD_RANK&source=HSF10&client=PC&v=" + convertor.ToString(time.Now().Unix())
 	//logger.SugaredLogger.Infof("url:%s", url2.QueryEscape(url))
 	var data models.StockConceptInfoResp
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "datacenter.eastmoney.com").
 		SetHeader("Referer", "https://emweb.securities.eastmoney.com/").
 		SetHeader("Origin", "https://emweb.securities.eastmoney.com").
@@ -2212,7 +2212,7 @@ func (receiver StockDataApi) GetStockFinancialInfo(stockCode string) *models.Sto
 	url := "https://datacenter.eastmoney.com/securities/api/data/v1/get?reportName=RPT_F10_FINANCE_DUPONT&columns=SECUCODE%2CSECURITY_CODE%2CSECURITY_NAME_ABBR%2CORG_CODE%2CORG_TYPE%2CREPORT_DATE%2CREPORT_TYPE%2CREPORT_DATE_NAME%2CSECURITY_TYPE_CODE%2CNOTICE_DATE%2CUPDATE_DATE%2CCURRENCY%2CNETPROFIT%2CTOTAL_OPERATE_INCOME%2CTOTAL_ASSETS%2CTOTAL_LIABILITIES%2CTOTAL_CURRENT_ASSETS%2CTOTAL_NONCURRENT_ASSETS%2CPARENT_NETPROFIT%2CSALE_NPR%2CTOTAL_ASSETS_TR%2CJROA%2CPARENT_NETPROFIT_RATIO%2CEQUITY_MULTIPLIER%2CROE%2CDEBT_ASSET_RATIO%2CTOTAL_INCOME%2CTOTAL_COST%2CTOTAL_EXPENSE%2CMONETARYFUNDS%2CTRADE_FINASSET%2CNOTE_RECE%2CACCOUNTS_RECE%2CFINANCE_RECE%2COTHER_RECE%2CINVENTORY%2CCREDITOR_INVEST%2CLONG_EQUITY_INVEST%2CINVEST_REALESTATE%2CFIXED_ASSET%2CCIP%2CUSERIGHT_ASSET%2CINTANGIBLE_ASSET%2CDEVELOP_EXPENSE%2CGOODWILL%2CLONG_PREPAID_EXPENSE%2CDEFER_TAX_ASSET%2CINVEST_INCOME%2CEXCHANGE_INCOME%2CFAIRVALUE_CHANGE_INCOME%2CASSET_DISPOSAL_INCOME%2COPERATE_COST%2CSURRENDER_VALUE%2CNET_COMPENSATE_EXPENSE%2CNET_CONTRACT_RESERVE%2CPOLICY_BONUS_EXPENSE%2COPERATE_TAX_ADD%2CINCOME_TAX%2CASSET_IMPAIRMENT_INCOME%2CCREDIT_IMPAIRMENT_INCOME%2CNONBUSINESS_EXPENSE%2CFINANCE_EXPENSE%2CSALE_EXPENSE%2CMANAGE_EXPENSE%2CRESEARCH_EXPENSE%2CINTEREST_NI%2CFEE_COMMISSION_NI%2CEARNED_PREMIUM%2CBUSINESS_MANAGE_EXPENSE%2COTHER_CREDITOR_INVEST%2COTHER_EQUITY_INVEST%2CLONG_RECE%2CAVAILABLE_SALE_FINASSET%2CHOLD_MATURITY_INVEST%2CFEE_COMMISSION_EXPENSE&quoteColumns=&filter=(SECUCODE%3D%22" + stockCode + "%22)&pageNumber=1&pageSize=12&sortTypes=-1&sortColumns=REPORT_DATE&source=HSF10&client=PC&v=" + convertor.ToString(time.Now().Unix())
 	//logger.SugaredLogger.Infof("url:%s", url)
 	var data models.StockFinancialInfoResp
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "datacenter.eastmoney.com").
 		SetHeader("Referer", "https://emweb.securities.eastmoney.com/").
 		SetHeader("Origin", "https://emweb.securities.eastmoney.com").
@@ -2239,7 +2239,7 @@ func (receiver StockDataApi) GetStockHolderNum(stockCode string) *models.StockHo
 	url := "https://datacenter.eastmoney.com/securities/api/data/v1/get?reportName=RPT_F10_EH_HOLDERNUM&columns=SECUCODE%2CSECURITY_CODE%2CEND_DATE%2CHOLDER_TOTAL_NUM%2CTOTAL_NUM_RATIO%2CAVG_FREE_SHARES%2CAVG_FREESHARES_RATIO%2CHOLD_FOCUS%2CPRICE%2CAVG_HOLD_AMT%2CHOLD_RATIO_TOTAL%2CFREEHOLD_RATIO_TOTAL&quoteColumns=&filter=(SECUCODE%3D%22" + stockCode + "%22)&pageNumber=1&pageSize=12&sortTypes=-1&sortColumns=END_DATE&source=HSF10&client=PC&v=" + strconv.Itoa(time.Now().Nanosecond())
 	//logger.SugaredLogger.Infof("url:%s", url)
 	var data models.StockHolderNumResp
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "datacenter.eastmoney.com").
 		SetHeader("Referer", "https://emweb.securities.eastmoney.com/").
 		SetHeader("Origin", "https://emweb.securities.eastmoney.com").
@@ -2259,7 +2259,7 @@ func (receiver StockDataApi) GetStockHolderNum(stockCode string) *models.StockHo
 
 func (receiver StockDataApi) GetIndustryValuation(bkName string) *models.IndustryValuationResp {
 	url := "https://datacenter-web.eastmoney.com/api/data/v1/get?callback=data&reportName=RPT_VALUEINDUSTRY_STA&columns=ALL&quoteColumns=&source=WEB&client=WEB&pageNumber=1&filter=%28BOARD_NAME%3D%22" + url2.QueryEscape(bkName) + "%22%29&_=" + strconv.Itoa(time.Now().Nanosecond())
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(url)
@@ -2339,7 +2339,7 @@ func (receiver StockDataApi) GetAllStocks(page int, pageSize int, name string, t
 	}
 	url := "https://data.eastmoney.com/dataapi/xuangu/list?st=CHANGE_RATE&sr=-1&ps=" + convertor.ToString(pageSize) + "&p=" + convertor.ToString(page) + "&sty=SECUCODE%2CSECURITY_CODE%2CSECURITY_NAME_ABBR%2CNEW_PRICE%2CCHANGE_RATE%2CVOLUME_RATIO%2CHIGH_PRICE%2CLOW_PRICE%2CPRE_CLOSE_PRICE%2CVOLUME%2CDEAL_AMOUNT%2CTURNOVERRATE%2CMARKET%2CCONCEPT%2CINDUSTRY&filter=%28MARKET+in+%28%22%E4%B8%8A%E4%BA%A4%E6%89%80%E4%B8%BB%E6%9D%BF%22%2C%22%E6%B7%B1%E4%BA%A4%E6%89%80%E4%B8%BB%E6%9D%BF%22%2C%22%E6%B7%B1%E4%BA%A4%E6%89%80%E5%88%9B%E4%B8%9A%E6%9D%BF%22%2C%22%E4%B8%8A%E4%BA%A4%E6%89%80%E7%A7%91%E5%88%9B%E6%9D%BF%22%2C%22%E4%B8%8A%E4%BA%A4%E6%89%80%E9%A3%8E%E9%99%A9%E8%AD%A6%E7%A4%BA%E6%9D%BF%22%2C%22%E6%B7%B1%E4%BA%A4%E6%89%80%E9%A3%8E%E9%99%A9%E8%AD%A6%E7%A4%BA%E6%9D%BF%22%2C%22%E5%8C%97%E4%BA%AC%E8%AF%81%E5%88%B8%E4%BA%A4%E6%98%93%E6%89%80%22%29%29" + url2.QueryEscape(search+indicators) + "&source=SELECT_SECURITIES&client=WEB&hyversion=v2"
 	//logger.SugaredLogger.Infof("url:%s", url)
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "data.eastmoney.com").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(url)
@@ -2586,7 +2586,7 @@ func (receiver StockDataApi) GetStockRZRQInfo(stockCode string) models.StockRZRQ
 	}
 	filter := url2.QueryEscape(fmt.Sprintf("(SECUCODE=\"%s\")", stockCode))
 	url := "https://datacenter.eastmoney.com/securities/api/data/v1/get?reportName=RPT_RZRQ_STOCKS_DETAIL&columns=MARKET_NAME%2CMARKET_CODE%2CTRADE_DATE%2CSECURITY_CODE%2CSECUCODE%2CSECURITY_NAME_ABBR%2CFIN_BALANCE%2CFIN_BUY_AMT%2CFIN_REPAY_AMT%2CLOAN_BALANCE%2CLOAN_SELL_VOL%2CLOAN_REPAY_VOL%2CMARGIN_BALANCE%2CLOAN_BALANCE_VOL%2CFIN_NETBUY_AMT&quoteColumns=&filter=" + filter + "&pageNumber=1&pageSize=50&sortTypes=-1&sortColumns=TRADE_DATE&source=Datacenter&client=PC&v=" + convertor.ToString(time.Now().Unix())
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "datacenter.eastmoney.com").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0").
 		Get(url)

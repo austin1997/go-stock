@@ -28,8 +28,7 @@ type SinaKLineItem struct {
 }
 
 func NewSinaKLineApi(config *SettingConfig) *SinaKLineApi {
-	client := SharedHTTPClient
-	client.SetTimeout(time.Duration(config.CrawlTimeOut) * time.Second)
+	client := CreateHTTPClientWithTimeout(time.Duration(config.CrawlTimeOut) * time.Second)
 	return &SinaKLineApi{
 		client: client,
 		config: config,
@@ -362,8 +361,7 @@ type TencentKLineResponse struct {
 }
 
 func NewTencentKLineApi(config *SettingConfig) *TencentKLineApi {
-	client := SharedHTTPClient
-	client.SetTimeout(time.Duration(config.CrawlTimeOut) * time.Second)
+	client := CreateHTTPClientWithTimeout(time.Duration(config.CrawlTimeOut) * time.Second)
 	return &TencentKLineApi{
 		client: client,
 		config: config,

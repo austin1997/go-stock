@@ -28,7 +28,7 @@ func (m MarketNewsApi) ConceptDetail(conceptCode string) *models.ConceptDetailIn
 		return info
 	}
 	url := fmt.Sprintf("https://q.10jqka.com.cn/gn/detail/code/%s/", conceptCode)
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "q.10jqka.com.cn").
 		SetHeader("Referer", "https://q.10jqka.com.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
@@ -158,7 +158,7 @@ func (m MarketNewsApi) ConceptStocks(conceptCode string, page int) []models.Conc
 		return nil
 	}
 	url := fmt.Sprintf("https://q.10jqka.com.cn/gn/detail/field/199112/order/desc/page/%d/ajax/1/code/%s", page, conceptCode)
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "q.10jqka.com.cn").
 		SetHeader("Referer", "https://q.10jqka.com.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
@@ -265,7 +265,7 @@ func (m MarketNewsApi) ConceptKLine(plateCode string) *models.ConceptKLineData {
 		return result
 	}
 	url := fmt.Sprintf("http://d.10jqka.com.cn/v6/line/bk_%s/01/all.js", plateCode)
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "d.10jqka.com.cn").
 		SetHeader("Referer", "https://q.10jqka.com.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
@@ -354,7 +354,7 @@ func (m MarketNewsApi) ConceptRealHead(plateCode string) *models.ConceptMarket {
 		return result
 	}
 	url := fmt.Sprintf("http://d.10jqka.com.cn/v2/realhead/bk_%s/last.js", plateCode)
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "d.10jqka.com.cn").
 		SetHeader("Referer", "https://q.10jqka.com.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
@@ -445,7 +445,7 @@ type ConceptPlate struct {
 // 数据来源：https://q.10jqka.com.cn/gn/ （GBK 编码的 HTML 页面，按字母分组的链接列表）
 func (m MarketNewsApi) GetAllConceptPlates() []ConceptPlate {
 	url := "https://q.10jqka.com.cn/gn/"
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "q.10jqka.com.cn").
 		SetHeader("Referer", "https://q.10jqka.com.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
@@ -519,7 +519,7 @@ type IndustryPlate struct {
 // 行业代码为 881xxx，与概念板块（885xxx/886xxx）区分
 func (m MarketNewsApi) GetAllIndustryPlates() []IndustryPlate {
 	url := "https://q.10jqka.com.cn/thshy/"
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "q.10jqka.com.cn").
 		SetHeader("Referer", "https://q.10jqka.com.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").
@@ -568,7 +568,7 @@ func (m MarketNewsApi) IndustryDetail(industryCode string) *models.ConceptDetail
 		return info
 	}
 	url := fmt.Sprintf("https://q.10jqka.com.cn/thshy/detail/code/%s/", industryCode)
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "q.10jqka.com.cn").
 		SetHeader("Referer", "https://q.10jqka.com.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0").

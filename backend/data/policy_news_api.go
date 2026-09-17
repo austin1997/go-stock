@@ -516,7 +516,7 @@ var (
 
 // fetchGovPage 抓取页面并按 charset（GB2312/GBK/UTF-8）解码为 goquery 文档
 func fetchGovPage(rawurl string) (*goquery.Document, error) {
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
 		SetHeader("Accept-Language", "zh-CN,zh;q=0.9").
@@ -877,7 +877,7 @@ type nfraResp struct {
 // itemId=914 为"新闻资讯"父栏目，返回各子栏目（时政要闻/监管动态/政策解读等）及各自最新文档。
 func fetchNfraPolicyNews(limit int) []PolicyNewsItem {
 	apiURL := "https://www.nfra.gov.cn/cbircweb/DocInfo/SelectItemAndDocByItemPId?itemId=914&pageSize=20"
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		SetHeader("Referer", "https://www.nfra.gov.cn/cn/view/pages/xinwenzixun/xinwenzixun.html").
 		Get(apiURL)
@@ -942,7 +942,7 @@ func fetchCsrcPolicyNews(limit int) []PolicyNewsItem {
 	var items []PolicyNewsItem
 	for _, ch := range channels {
 		apiURL := fmt.Sprintf("https://www.csrc.gov.cn/searchList/%s?_isAgg=true&_isJson=true&_pageSize=%d&_template=index&_rangeTimeGte=&_channelName=&page=1", ch.id, limit)
-		resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+		resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 			SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 			SetHeader("Referer", ch.referer).
 			Get(apiURL)
@@ -995,7 +995,7 @@ var (
 // 每条记录形如 "aT":"标题","aPd":"2026-07-31 14:33","aU":"{\"common\":\"/jbkzzx/...html\"}"，
 // 按 aT 锚点切分记录后逐条提取。
 func fetchNdcpaPolicyNews(limit int) []PolicyNewsItem {
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		Get("https://www.ndcpa.gov.cn/jbkzzx/c100014/common/list.html")
 	if err != nil {
@@ -1079,7 +1079,7 @@ func fetchNeaPolicyNews(limit int) []PolicyNewsItem {
 		if err != nil {
 			continue
 		}
-		resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+		resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 			SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 			SetHeader("Referer", ch.referer).
 			Get(ch.jsonURL)

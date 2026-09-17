@@ -20,6 +20,7 @@ import (
 	"github.com/gobwas/ws/wsutil"
 	"github.com/google/uuid"
 
+	"go-stock/backend/data"
 	"go-stock/backend/events"
 	"go-stock/backend/logger"
 	"go-stock/backend/tenant"
@@ -79,6 +80,9 @@ func newWebServer(staticDir string) *webServer {
 	mux.HandleFunc("/api/auth/me", webauth.HandleMe)
 	mux.HandleFunc("/api/auth/users", webauth.HandleUsers)
 	mux.HandleFunc("/api/auth/users/", webauth.HandleUserDisabled)
+	mux.HandleFunc(data.MCPOAuthCallbackPath, s.withAuth(func(w http.ResponseWriter, r *http.Request) {
+		data.HandleWebMCPOAuthCallback(w, r, webauth.UserFromRequest(r).ID)
+	}))
 	mux.HandleFunc("/api/rpc", s.withAuth(s.handleRPC))
 	mux.HandleFunc("/api/ws", s.withAuth(s.handleWS))
 	mux.HandleFunc("/api/upload", s.withAuth(s.handleUpload))
