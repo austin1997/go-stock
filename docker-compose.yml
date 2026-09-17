@@ -1,0 +1,22 @@
+services:
+  go-stock-web:
+    build: .
+    image: go-stock-web:latest
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai
+      WEB_ADDR: ":8080"
+      WEB_STATIC_DIR: /app/frontend/dist
+      GO_STOCK_ROOT_DIR: /app
+      # 首次启动必须设置管理员，否则容器会退出：
+      # WEB_ADMIN_USER: admin
+      # WEB_ADMIN_PASSWORD: change-me
+      # 或使用一次性注册密钥：WEB_SETUP_SECRET: "your-setup-secret"
+      # WEB_ALLOW_REGISTER: "true"
+    volumes:
+      - ./data:/app/data
+      - ./memory:/app/memory
+      - ./skills:/app/skills
+      - ./logs:/app/logs
+    restart: unless-stopped

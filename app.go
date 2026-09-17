@@ -13,10 +13,14 @@ import (
 	"go-stock/backend/agent/tools"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
+	"go-stock/backend/events"
 	"go-stock/backend/logger"
 	"go-stock/backend/machineid"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 	"go-stock/backend/util"
+	"go-stock/backend/webdownload"
+	"go-stock/backend/webmode"
 	"io"
 	"os"
 	"path/filepath"
@@ -41,6 +45,8 @@ import (
 // App struct
 type App struct {
 	ctx                context.Context
+	jobCtx             context.Context
+	jobCancel          context.CancelFunc
 	cache              *freecache.Cache
 	cron               *cron.Cron
 	cronEntrys         map[string]cron.EntryID
@@ -63,18 +69,58 @@ type App struct {
 func NewApp() *App {
 	cacheSize := 512 * 1024
 	cache := freecache.NewCache(cacheSize)
-	c := cron.New(cron.WithSeconds(), cron.WithChain(cron.Recover(cron.DefaultLogger)))
-	c.Start()
-	var tools []data.Tool
-	tools = data.Tools(tools)
-	return &App{
+	jobCtx, jobCancel := context.WithCancel(context.Background())
+	a := &App{
+		jobCtx:             jobCtx,
+		jobCancel:          jobCancel,
 		cache:              cache,
-		cron:               c,
 		cronEntrys:         make(map[string]cron.EntryID),
-		AiTools:            tools,
+		AiTools:            data.Tools(nil),
 		stockAlertLastSent: make(map[string]time.Time),
 		priceAtAlertReset:  make(map[string]float64),
 	}
+	c := cron.New(cron.WithSeconds(), cron.WithChain(
+		cron.Recover(cron.DefaultLogger),
+		func(job cron.Job) cron.Job {
+			captured := tenant.Capture()
+			return cron.FuncJob(func() {
+				if a.jobCtx != nil && a.jobCtx.Err() != nil {
+					return
+				}
+				if captured != nil {
+					tenant.Bind(captured)
+					defer tenant.Unbind()
+				}
+				job.Run()
+			})
+		},
+	))
+	c.Start()
+	a.cron = c
+	return a
+}
+
+func (a *App) initJobContext(parent context.Context) {
+	if a == nil {
+		return
+	}
+	if parent == nil {
+		parent = context.Background()
+	}
+	if a.jobCancel != nil {
+		a.jobCancel()
+	}
+	a.jobCtx, a.jobCancel = context.WithCancel(parent)
+}
+
+func (a *App) jobContext() context.Context {
+	if a != nil && a.jobCtx != nil {
+		return a.jobCtx
+	}
+	if a != nil && a.ctx != nil {
+		return a.ctx
+	}
+	return context.Background()
 }
 
 func (a *App) setCronEntry(key string, id cron.EntryID) {
@@ -158,7 +204,7 @@ func (a *App) CheckDeviceBinding(token string, apiBase string) map[string]any {
 // 规避 macOS WKWebView 的 App Transport Security 对明文 HTTP 的限制，
 // 前端不应直接 fetch 远程广场接口。
 // method: GET/POST/PUT/DELETE
-// apiBase: 广场 API 根地址，如 http://go-stock.sparkmemory.top:1918/api
+// apiBase: 保留以兼容前端签名，实际固定为官方广场地址，不信任调用方提交的 URL
 // path: 接口路径，如 /auth/register
 // query: URL 查询参数，可为 nil；nil 值与空字符串会被跳过，与前端原 fetch 行为一致
 // body: 请求体 JSON 字符串，可为空
@@ -166,12 +212,22 @@ func (a *App) CheckDeviceBinding(token string, apiBase string) map[string]any {
 // 返回响应体解析后的 map（含 code/message/data），网络或解析失败时 code != 0。
 func (a *App) PromptPlazaRequest(method, apiBase, path string, query map[string]any, body, token string) map[string]any {
 	result := map[string]any{"code": -1, "message": "", "data": nil}
-	if apiBase == "" {
-		result["message"] = "apiBase 为空"
+	method = strings.ToUpper(strings.TrimSpace(method))
+	if !data.PlazaHTTPMethodAllowed(method) {
+		result["message"] = "method not allowed"
 		return result
 	}
-	url := strings.TrimRight(apiBase, "/") + path
-	req := data.SharedHTTPClient.R().SetHeader("Content-Type", "application/json")
+	url, err := data.ResolvePlazaProxyURL(path)
+	if err != nil {
+		result["message"] = err.Error()
+		return result
+	}
+	const maxPlazaBody = 1 << 20
+	if len(body) > maxPlazaBody {
+		result["message"] = "request body too large"
+		return result
+	}
+	req := data.PlazaHTTPClient().R().SetHeader("Content-Type", "application/json")
 	if token != "" {
 		req = req.SetHeader("Authorization", "Bearer "+token)
 	}
@@ -216,6 +272,9 @@ func (a *App) PromptPlazaRequest(method, apiBase, path string, query map[string]
 }
 
 func (a *App) QuitApp() {
+	if webmode.Enabled() {
+		return
+	}
 	if a.ctx != nil {
 		if a.cron != nil {
 			a.cron.Stop()
@@ -344,6 +403,13 @@ func (a *App) CheckUpdate(flag int) {
 		}
 	}
 
+	if webmode.Enabled() {
+		if releaseVersion.TagName != Version {
+			go events.Emit(a.ctx, "updateVersion", releaseVersion)
+		}
+		return
+	}
+
 	if releaseVersion.TagName != Version {
 		tag := &models.Tag{}
 		tagResp, tagErr := data.SharedHTTPClient.R().
@@ -426,7 +492,7 @@ func (a *App) CheckUpdate(flag int) {
 		sources = append(sources, downloadSource{mirrorDownloadUrl, "gh.927223.xyz"})
 
 		downloadID := fmt.Sprintf("update-%d", time.Now().UnixNano())
-		go runtime.EventsEmit(a.ctx, "updateDownloadStart", map[string]any{
+		go events.Emit(a.ctx, "updateDownloadStart", map[string]any{
 			"downloadId": downloadID,
 			"version":    releaseVersion.TagName,
 			"total":      totalSize,
@@ -439,7 +505,7 @@ func (a *App) CheckUpdate(flag int) {
 		tmpFile, err := os.CreateTemp("", "go-stock-update-*.tmp")
 		if err != nil {
 			logger.SugaredLogger.Errorf("create temp file error: %s", err.Error())
-			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+			go events.Emit(a.ctx, "updateDownloadFailed", map[string]any{
 				"downloadId": downloadID,
 				"version":    releaseVersion.TagName,
 				"error":      "无法创建临时文件: " + err.Error(),
@@ -459,7 +525,7 @@ func (a *App) CheckUpdate(flag int) {
 			err := a.downloadUpdate(src.url, tmpPath, totalSize, downloadID, src.proxy)
 			if err != nil {
 				logger.SugaredLogger.Warnf("download from %s error: %s, trying next...", src.url, err.Error())
-				go runtime.EventsEmit(a.ctx, "downloadProgress", map[string]any{
+				go events.Emit(a.ctx, "downloadProgress", map[string]any{
 					"downloadId":    downloadID,
 					"status":        "retrying",
 					"attempt":       i + 1,
@@ -478,7 +544,7 @@ func (a *App) CheckUpdate(flag int) {
 		}
 
 		if !downloadSuccess {
-			go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+			go events.Emit(a.ctx, "updateDownloadFailed", map[string]any{
 				"downloadId": downloadID,
 				"version":    releaseVersion.TagName,
 				"error":      "所有下载源均失败",
@@ -490,7 +556,7 @@ func (a *App) CheckUpdate(flag int) {
 			return
 		}
 
-		go runtime.EventsEmit(a.ctx, "updateDownloadComplete", map[string]any{
+		go events.Emit(a.ctx, "updateDownloadComplete", map[string]any{
 			"downloadId": downloadID,
 			"version":    releaseVersion.TagName,
 		})
@@ -500,7 +566,7 @@ func (a *App) CheckUpdate(flag int) {
 		if IsMacOS() {
 			if err := ApplyMacUpdate(tmpPath); err != nil {
 				logger.SugaredLogger.Error("macOS 更新失败: ", err.Error())
-				go runtime.EventsEmit(a.ctx, "updateDownloadFailed", map[string]any{
+				go events.Emit(a.ctx, "updateDownloadFailed", map[string]any{
 					"downloadId": downloadID,
 					"version":    releaseVersion.TagName,
 					"error":      err.Error(),
@@ -511,7 +577,7 @@ func (a *App) CheckUpdate(flag int) {
 				})
 				return
 			}
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "新版本：" + releaseVersion.TagName,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -523,7 +589,7 @@ func (a *App) CheckUpdate(flag int) {
 		body, err := os.ReadFile(tmpPath)
 		if err != nil {
 			logger.SugaredLogger.Errorf("read downloaded file error: %s", err.Error())
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "新版本：" + releaseVersion.TagName,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -536,16 +602,16 @@ func (a *App) CheckUpdate(flag int) {
 		if err != nil {
 			logger.SugaredLogger.Error("更新失败: ", err.Error())
 			if !IsRunningAsAdmin() {
-				go runtime.EventsEmit(a.ctx, "updateNeedAdmin", map[string]any{
+				go events.Emit(a.ctx, "updateNeedAdmin", map[string]any{
 					"version": releaseVersion.TagName,
 					"message": commitMessage,
 				})
 			} else {
-				go runtime.EventsEmit(a.ctx, "updateVersion", releaseVersion)
+				go events.Emit(a.ctx, "updateVersion", releaseVersion)
 			}
 			return
 		} else {
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "新版本：" + releaseVersion.TagName,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -554,7 +620,7 @@ func (a *App) CheckUpdate(flag int) {
 		}
 	} else {
 		if flag == 1 {
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    "当前版本：" + Version,
 				"isRed":   true,
 				"source":  "go-stock",
@@ -570,7 +636,7 @@ func (a *App) CheckUpdate(flag int) {
 func (a *App) downloadUpdate(url string, tmpPath string, totalSize int64, downloadID string, proxy string) error {
 	return data.DownloadWithProgress(a.ctx, url, tmpPath, totalSize,
 		func(downloaded, total int64, percentage, currentSpeed, avgSpeed float64) {
-			go runtime.EventsEmit(a.ctx, "downloadProgress", map[string]any{
+			go events.Emit(a.ctx, "downloadProgress", map[string]any{
 				"downloadId": downloadID,
 				"downloaded": downloaded,
 				"total":      total,
@@ -741,22 +807,22 @@ func (a *App) domReady(ctx context.Context) {
 		// 增加延迟确保前端已准备好接收事件
 		go func() {
 			time.Sleep(2 * time.Second)
-			runtime.EventsEmit(a.ctx, "loadingMsg", "done")
+			events.Emit(a.ctx, "loadingMsg", "done")
 		}()
 	}()
 
 	//if stocksBin != nil && len(stocksBin) > 0 {
-	//	go runtime.EventsEmit(a.ctx, "loadingMsg", "检查A股基础信息...")
+	//	go events.Emit(a.ctx, "loadingMsg", "检查A股基础信息...")
 	//	go initStockData(a.ctx)
 	//}
 	//
 	//if stocksBinHK != nil && len(stocksBinHK) > 0 {
-	//	go runtime.EventsEmit(a.ctx, "loadingMsg", "检查港股基础信息...")
+	//	go events.Emit(a.ctx, "loadingMsg", "检查港股基础信息...")
 	//	go initStockDataHK(a.ctx)
 	//}
 	//
 	//if stocksBinUS != nil && len(stocksBinUS) > 0 {
-	//	go runtime.EventsEmit(a.ctx, "loadingMsg", "检查美股基础信息...")
+	//	go events.Emit(a.ctx, "loadingMsg", "检查美股基础信息...")
 	//	go initStockDataUS(a.ctx)
 	//}
 	updateBasicInfo()
@@ -767,18 +833,18 @@ func (a *App) domReady(ctx context.Context) {
 
 	// 启动飞书应用机器人（如已启用）
 	if config != nil && config.FeishuBotEnable {
-		go func() {
+		tenant.Go(func() {
 			defer PanicHandler()
 			if err := a.startFeishuBot(); err != nil {
 				logger.SugaredLogger.Errorf("auto start feishu bot failed: %v", err)
 			}
-		}()
+		})
 	}
 
-	go func() {
-		go data.NewMarketNewsApi().TelegraphList(30)
-		go data.NewMarketNewsApi().GetSinaNews(30)
-		go data.NewMarketNewsApi().TradingViewNews()
+	tenant.Go(func() {
+		tenant.Go(func() { data.NewMarketNewsApi().TelegraphList(30) })
+		tenant.Go(func() { data.NewMarketNewsApi().GetSinaNews(30) })
+		tenant.Go(func() { data.NewMarketNewsApi().TradingViewNews() })
 
 		interval := config.RefreshInterval
 		if interval <= 0 {
@@ -801,9 +867,9 @@ func (a *App) domReady(ctx context.Context) {
 			//news := data.NewMarketNewsApi().GetNewTelegraph(30)
 			news := data.NewMarketNewsApi().TelegraphList(30)
 			if data.GetSettingConfig().EnablePushNews {
-				go a.NewsPush(news)
+				tenant.Go(func() { a.NewsPush(news) })
 			}
-			go runtime.EventsEmit(a.ctx, "newTelegraph", news)
+			go events.Emit(a.ctx, "newTelegraph", news)
 		})
 		if err != nil {
 			logger.SugaredLogger.Errorf("AddFunc error:%s", err.Error())
@@ -814,9 +880,9 @@ func (a *App) domReady(ctx context.Context) {
 		entryIDSina, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", interval+10), func() {
 			news := data.NewMarketNewsApi().GetSinaNews(30)
 			if data.GetSettingConfig().EnablePushNews {
-				go a.NewsPush(news)
+				tenant.Go(func() { a.NewsPush(news) })
 			}
-			go runtime.EventsEmit(a.ctx, "newSinaNews", news)
+			go events.Emit(a.ctx, "newSinaNews", news)
 		})
 		if err != nil {
 			logger.SugaredLogger.Errorf("AddFunc error:%s", err.Error())
@@ -827,23 +893,23 @@ func (a *App) domReady(ctx context.Context) {
 		entryIDTradingViewNews, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", interval+10), func() {
 			news := data.NewMarketNewsApi().TradingViewNews()
 			if data.GetSettingConfig().EnablePushNews {
-				go a.NewsPush(news)
+				tenant.Go(func() { a.NewsPush(news) })
 			}
-			go runtime.EventsEmit(a.ctx, "tradingViewNews", news)
+			go events.Emit(a.ctx, "tradingViewNews", news)
 		})
 		if err != nil {
 			logger.SugaredLogger.Errorf("AddFunc error:%s", err.Error())
 		} else {
 			a.setCronEntry("tradingViewNews", entryIDTradingViewNews)
 		}
-	}()
+	})
 
 	// 政策新闻后台定时抓取（全部门聚合，自动入库，每 5 分钟一次）
-	go func() {
+	tenant.Go(func() {
 		scrapePolicyNews := func() {
 			items := data.NewPolicyNewsApi().GetAllDeptPolicyNews(100)
 			logger.SugaredLogger.Infof("政策新闻后台抓取完成，共 %d 条", len(*items))
-			go runtime.EventsEmit(a.ctx, "policyNewsUpdated", len(*items))
+			go events.Emit(a.ctx, "policyNewsUpdated", len(*items))
 		}
 		// 启动 1 分钟后先抓一次（避开启动高峰）
 		time.Sleep(1 * time.Minute)
@@ -856,10 +922,10 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("PolicyNews", idPolicyNews)
 		}
-	}()
+	})
 
 	//刷新基金净值信息
-	go func() {
+	tenant.Go(func() {
 		//ticker := time.NewTicker(time.Second * time.Duration(60))
 		//defer ticker.Stop()
 		//for range ticker.C {
@@ -906,7 +972,7 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("MonitorFollowedStockCostPrices", idCostPrice)
 		}
 
-	}()
+	})
 
 	if config.EnableNews {
 		//go func() {
@@ -915,7 +981,7 @@ func (a *App) domReady(ctx context.Context) {
 		//	for range ticker.C {
 		//		telegraph := refreshTelegraphList()
 		//		if telegraph != nil {
-		//			go runtime.EventsEmit(a.ctx, "telegraph", telegraph)
+		//			go events.Emit(a.ctx, "telegraph", telegraph)
 		//		}
 		//	}
 		//
@@ -924,7 +990,7 @@ func (a *App) domReady(ctx context.Context) {
 		id, err := a.cron.AddFunc(fmt.Sprintf("@every %ds", 60), func() {
 			telegraph := refreshTelegraphList()
 			if telegraph != nil {
-				go runtime.EventsEmit(a.ctx, "telegraph", telegraph)
+				go events.Emit(a.ctx, "telegraph", telegraph)
 			}
 		})
 		if err != nil {
@@ -933,19 +999,19 @@ func (a *App) domReady(ctx context.Context) {
 			a.setCronEntry("refreshTelegraphList", id)
 		}
 
-		go runtime.EventsEmit(a.ctx, "telegraph", refreshTelegraphList())
+		go events.Emit(a.ctx, "telegraph", refreshTelegraphList())
 	}
-	go MonitorStockPrices(a)
+	tenant.Go(func() { MonitorStockPrices(a) })
 	if config.EnableFund {
-		go MonitorFundPrices(a)
-		go data.NewFundApi().AllFund()
+		tenant.Go(func() { MonitorFundPrices(a) })
+		tenant.Go(func() { data.NewFundApi().AllFund() })
 	}
 	// AI 推荐股票价格监控
-	go MonitorAiRecommendStockPrices(a)
+	tenant.Go(func() { MonitorAiRecommendStockPrices(a) })
 	// 自选股成本价监控
-	go MonitorFollowedStockCostPrices(a)
+	tenant.Go(func() { MonitorFollowedStockCostPrices(a) })
 	// 市场统计数据采集（交易日每5分钟）
-	go func() {
+	tenant.Go(func() {
 		a.FetchAndSaveMarketStatistic()
 		idMarketStat, err := a.cron.AddFunc("0 */5 9-15 * * 1-5", func() {
 			a.FetchAndSaveMarketStatistic()
@@ -955,9 +1021,9 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("FetchAndSaveMarketStatistic", idMarketStat)
 		}
-	}()
+	})
 	// 板块资金流向数据采集（交易日每60秒）
-	go func() {
+	tenant.Go(func() {
 		data.NewBKFundFlowApi().FetchAndSave()
 		idBKFundFlow, err := a.cron.AddFunc("@every 60s", func() {
 			if a.IsTradingTime() {
@@ -969,9 +1035,9 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("BKFundFlowFetchAndSave", idBKFundFlow)
 		}
-	}()
+	})
 	// 概念资金流向数据采集（交易日每60秒）
-	go func() {
+	tenant.Go(func() {
 		data.NewConceptFundFlowApi().FetchAndSave()
 		idConceptFundFlow, err := a.cron.AddFunc("@every 60s", func() {
 			if a.IsTradingTime() {
@@ -983,12 +1049,12 @@ func (a *App) domReady(ctx context.Context) {
 		} else {
 			a.setCronEntry("ConceptFundFlowFetchAndSave", idConceptFundFlow)
 		}
-	}()
+	})
 	//检查新版本
-	go func() {
+	tenant.Go(func() {
 		a.CheckUpdate(0)
-		go a.CheckStockBaseInfo(a.ctx)
-		go syncAllStockInfo(a.ctx)
+		tenant.Go(func() { a.CheckStockBaseInfo(a.ctx) })
+		tenant.Go(func() { syncAllStockInfo(a.ctx) })
 
 		a.cron.AddFunc("0 0 2 * * *", func() {
 			logger.SugaredLogger.Errorf("Checking for updates...")
@@ -1001,13 +1067,13 @@ func (a *App) domReady(ctx context.Context) {
 		a.cron.AddFunc("30 05 8,12,20 * * *", func() {
 			syncAllStockInfo(a.ctx)
 		})
-	}()
+	})
 
 	//检查谷歌浏览器
 	//go func() {
 	//	f := checkChromeOnWindows()
 	//	if !f {
-	//		go runtime.EventsEmit(a.ctx, "warnMsg", "谷歌浏览器未安装,ai分析功能可能无法使用")
+	//		go events.Emit(a.ctx, "warnMsg", "谷歌浏览器未安装,ai分析功能可能无法使用")
 	//	}
 	//}()
 
@@ -1015,7 +1081,7 @@ func (a *App) domReady(ctx context.Context) {
 	//go func() {
 	//	path, e := checkEdgeOnWindows()
 	//	if !e {
-	//		go runtime.EventsEmit(a.ctx, "warnMsg", "Edge浏览器未安装,ai分析功能可能无法使用")
+	//		go events.Emit(a.ctx, "warnMsg", "Edge浏览器未安装,ai分析功能可能无法使用")
 	//	} else {
 	//		logger.SugaredLogger.Infof("Edge浏览器已安装，路径为: %s", path)
 	//	}
@@ -1039,7 +1105,7 @@ func (a *App) domReady(ctx context.Context) {
 func syncAllStockInfo(ctx context.Context) {
 	defer PanicHandler()
 	defer func() {
-		go runtime.EventsEmit(ctx, "loadingMsg", "done")
+		go events.Emit(ctx, "loadingMsg", "done")
 	}()
 	db.Dao.Unscoped().Model(&models.AllStockInfo{}).Where("1=1").Delete(&models.AllStockInfo{})
 	for page := 1; page < 3; page++ {
@@ -1057,7 +1123,7 @@ func syncAllStockInfo(ctx context.Context) {
 func (a *App) CheckStockBaseInfo(ctx context.Context) {
 	defer PanicHandler()
 	defer func() {
-		go runtime.EventsEmit(ctx, "loadingMsg", "done")
+		go events.Emit(ctx, "loadingMsg", "done")
 	}()
 	stockBasics := &[]data.StockBasic{}
 	data.SharedHTTPClient.R().
@@ -1071,7 +1137,7 @@ func (a *App) CheckStockBaseInfo(ctx context.Context) {
 		logger.SugaredLogger.Errorf("保存StockBasic股票基础信息失败:%s", err.Error())
 	}
 	// 全量覆盖完成后，用通达信即时数据对 A 股做增量校准（新股上市当天即可见）
-	go a.syncStockBasicFromTdx()
+	tenant.Go(func() { a.syncStockBasicFromTdx() })
 
 	//count := int64(0)
 	//db.Dao.Model(&data.StockBasic{}).Count(&count)
@@ -1132,7 +1198,7 @@ func (a *App) CheckStockBaseInfo(ctx context.Context) {
 		logger.SugaredLogger.Errorf("保存StockInfoUS股票基础信息失败:%s", err.Error())
 	}
 	// 港股/美股全量覆盖完成后，用通达信扩展行情即时数据做增量校准
-	go a.syncHKUSStockBasicFromTdx()
+	tenant.Go(func() { a.syncHKUSStockBasicFromTdx() })
 	//for _, stock := range *stockUSBasics {
 	//	stockInfo := &models.StockInfoUS{
 	//		Code:   stock.Code,
@@ -1196,10 +1262,10 @@ func (a *App) NewsPush(news *[]models.Telegraph) {
 	for _, telegraph := range *news {
 		if onlyPushRed {
 			if telegraph.IsRed || strutil.ContainsAny(telegraph.Content, stockNames) {
-				go runtime.EventsEmit(a.ctx, "newsPush", telegraph)
+				go events.Emit(a.ctx, "newsPush", telegraph)
 			}
 		} else {
-			go runtime.EventsEmit(a.ctx, "newsPush", telegraph)
+			go events.Emit(a.ctx, "newsPush", telegraph)
 		}
 		//go data.NewAlertWindowsApi("go-stock", telegraph.Source+" "+telegraph.Time, telegraph.Content, string(icon)).SendNotification()
 		//}
@@ -1208,7 +1274,7 @@ func (a *App) NewsPush(news *[]models.Telegraph) {
 
 func (a *App) AddCronTask(follow data.FollowedStock) func() {
 	return func() {
-		go runtime.EventsEmit(a.ctx, "warnMsg", "开始自动分析"+follow.Name+"_"+follow.StockCode)
+		go events.Emit(a.ctx, "warnMsg", "开始自动分析"+follow.Name+"_"+follow.StockCode)
 		ai := data.NewDeepSeekOpenAi(a.ctx, follow.AiConfigId)
 		thinking := data.GetSettingConfig().GetAIConfigThinking(follow.AiConfigId)
 		msgs := ai.NewChatStream(follow.Name, follow.StockCode, "", nil, a.AiTools, thinking)
@@ -1232,7 +1298,7 @@ func (a *App) AddCronTask(follow data.FollowedStock) func() {
 		}
 
 		data.NewDeepSeekOpenAi(a.ctx, follow.AiConfigId).SaveAIResponseResult(follow.StockCode, follow.Name, res.String(), chatId, question)
-		go runtime.EventsEmit(a.ctx, "warnMsg", "AI分析完成："+follow.Name+"_"+follow.StockCode)
+		go events.Emit(a.ctx, "warnMsg", "AI分析完成："+follow.Name+"_"+follow.StockCode)
 
 	}
 }
@@ -1612,10 +1678,10 @@ func MonitorAiRecommendStockPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n建议买入价: %.2f-%.2f",
 					aiStock.StockName, aiStock.StockCode, currentPrice, aiStock.RecommendBuyPriceMin, aiStock.RecommendBuyPriceMax)
 				if a.canSendAlert(buyAlertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1645,10 +1711,10 @@ func MonitorAiRecommendStockPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n建议止盈价: %.2f-%.2f",
 					aiStock.StockName, aiStock.StockCode, currentPrice, aiStock.RecommendStopProfitPriceMin, aiStock.RecommendStopProfitPriceMax)
 				if a.canSendAlert(profitAlertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1679,10 +1745,10 @@ func MonitorAiRecommendStockPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n建议止损价: %s",
 					aiStock.StockName, aiStock.StockCode, currentPrice, aiStock.RecommendStopLossPrice)
 				if a.canSendAlert(stopLossAlertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1764,10 +1830,10 @@ func MonitorFollowedStockCostPrices(a *App) {
 				plainContent := fmt.Sprintf("%s(%s)\n当前价格: %.2f\n成本价: %.2f\n亏损: %.2f%%",
 					followedStock.Name, followedStock.StockCode, currentPrice, costPrice, dropPercent)
 				if a.canSendAlert(alertKey, 5*time.Minute) {
-					go data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification()
-					go data.NewDingDingAPI().SendToDingDing(title, content)
-					go data.NewFeishuAPI().SendToFeishu(title, content)
-					go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+					tenant.Go(func() { data.NewAlertWindowsApi("go-stock价格预警", title, content, "").SendNotification() })
+					tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+					tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
+					go events.Emit(a.ctx, "newsPush", map[string]any{
 						"time":    title,
 						"isRed":   true,
 						"source":  "go-stock",
@@ -1939,19 +2005,51 @@ func addStockFollowData(follow data.FollowedStock, stockData *data.StockInfo) {
 
 	//logger.SugaredLogger.Debugf("stockData:%+v", stockData)
 	if follow.Price != price && price > 0 {
-		go db.Dao.Model(follow).Where("stock_code = ?", follow.StockCode).Updates(map[string]interface{}{
-			"price": price,
+		tenant.Go(func() {
+			_ = db.Dao.Model(follow).Where("stock_code = ?", follow.StockCode).Updates(map[string]interface{}{
+				"price": price,
+			})
 		})
 	}
+}
+
+// StopBackground 停止该用户运行时的 cron、Agent 与飞书机器人，供网页版禁用账号时调用。
+func (a *App) StopBackground() {
+	if a == nil {
+		return
+	}
+	if a.jobCancel != nil {
+		a.jobCancel()
+	}
+	if a.cron != nil {
+		stopCtx := a.cron.Stop()
+		select {
+		case <-stopCtx.Done():
+		case <-time.After(15 * time.Second):
+			logger.SugaredLogger.Warn("等待运行中的定时任务结束超时")
+		}
+	}
+	a.agentMu.Lock()
+	if a.agentCancel != nil {
+		a.agentCancel()
+		a.agentCancel = nil
+	}
+	a.agentMu.Unlock()
+	a.summaryMu.Lock()
+	if a.summaryCancel != nil {
+		a.summaryCancel()
+		a.summaryCancel = nil
+	}
+	a.summaryMu.Unlock()
+	a.stopFeishuBotInternal()
 }
 
 // shutdown is called at application termination
 func (a *App) shutdown(ctx context.Context) {
 	defer PanicHandler()
-	// 停止飞书应用机器人长连接
-	a.stopFeishuBotInternal()
+	a.StopBackground()
 	// 记录当前窗口大小，供下次启动时还原
-	if a.ctx != nil {
+	if a.ctx != nil && !webmode.Enabled() {
 		if w, h := runtime.WindowGetSize(a.ctx); w > 0 && h > 0 {
 			cfg := data.GetSettingConfig()
 			cfg.WindowWidth = w
@@ -2043,9 +2141,11 @@ func (a *App) SendDingDingMessageByType(message string, stockCode string, msgTyp
 	}
 	stockInfo := &data.StockInfo{}
 	db.Dao.Model(stockInfo).Where("code = ?", stockCode).First(stockInfo)
-	go data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	tenant.Go(func() {
+		data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	})
 
-	go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+	go events.Emit(a.ctx, "newsPush", map[string]any{
 		"time":    "📈 " + getMsgTypeName(msgType),
 		"isRed":   true,
 		"source":  "go-stock",
@@ -2092,9 +2192,11 @@ func (a *App) SendFeishuMessageByType(message string, stockCode string, msgType 
 	}
 	stockInfo := &data.StockInfo{}
 	db.Dao.Model(stockInfo).Where("code = ?", stockCode).First(stockInfo)
-	go data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	tenant.Go(func() {
+		data.NewAlertWindowsApi("go-stock消息通知", getMsgTypeName(msgType), GenNotificationMsg(stockInfo), "").SendNotification()
+	})
 
-	go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+	go events.Emit(a.ctx, "newsPush", map[string]any{
 		"time":    "📈 " + getMsgTypeName(msgType),
 		"isRed":   true,
 		"source":  "go-stock",
@@ -2128,18 +2230,15 @@ func (a *App) startFeishuBot() error {
 		return fmt.Errorf("请先在设置中填写飞书 App ID、App Secret，并选择 AI 配置")
 	}
 
-	ctx := context.Background()
-	if a.ctx != nil {
-		ctx = a.ctx
-	}
+	ctx := a.jobContext()
 	a.feishuBot = bot
 
-	go func() {
+	tenant.Go(func() {
 		defer PanicHandler()
 		if err := bot.Start(ctx); err != nil {
 			logger.SugaredLogger.Errorf("feishu bot start error: %v", err)
 		}
-	}()
+	})
 
 	logger.SugaredLogger.Infof("feishu bot started")
 	return nil
@@ -2184,11 +2283,11 @@ func (a *App) NewChatStream(stock, stockCode, question string, aiConfigId int, s
 	defer func() {
 		if err := recover(); err != nil {
 			logger.SugaredLogger.Errorf("NewChatStream panic: %v", err)
-			runtime.EventsEmit(a.ctx, "newChatStream", map[string]any{
+			events.Emit(a.ctx, "newChatStream", map[string]any{
 				"code":    0,
 				"content": fmt.Sprintf("AI分析异常: %v", err),
 			})
-			runtime.EventsEmit(a.ctx, "newChatStream", "DONE")
+			events.Emit(a.ctx, "newChatStream", "DONE")
 		}
 	}()
 	var msgs <-chan map[string]any
@@ -2198,9 +2297,9 @@ func (a *App) NewChatStream(stock, stockCode, question string, aiConfigId int, s
 		msgs = data.NewDeepSeekOpenAi(a.ctx, aiConfigId).NewChatStream(stock, stockCode, question, sysPromptId, []data.Tool{}, think)
 	}
 	for msg := range msgs {
-		runtime.EventsEmit(a.ctx, "newChatStream", msg)
+		events.Emit(a.ctx, "newChatStream", msg)
 	}
-	runtime.EventsEmit(a.ctx, "newChatStream", "DONE")
+	events.Emit(a.ctx, "newChatStream", "DONE")
 }
 
 func (a *App) SaveAIResponseResult(stockCode, stockName, result, chatId, question string, aiConfigId int) {
@@ -2347,6 +2446,9 @@ func (a *App) GetConfig() *data.SettingConfig {
 
 func (a *App) ExportConfig() string {
 	config := data.NewSettingsApi().Export()
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat("config.json", []byte(config))
+	}
 	file, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 		Title:                "导出配置文件",
 		CanCreateDirectories: true,
@@ -2512,9 +2614,13 @@ func (a *App) SaveAsMarkdown(stockCode, stockName string) string {
 	res := data.NewDeepSeekOpenAi(a.ctx, 0).GetAIResponseResult(stockCode)
 	if res != nil && len(res.Content) > 100 {
 		analysisTime := res.CreatedAt.Format("2006-01-02_15_04_05")
+		filename := fmt.Sprintf("%s[%s]AI分析结果_%s.md", stockName, stockCode, analysisTime)
+		if webmode.Enabled() {
+			return webdownload.PutAndFormat(filename, []byte(res.Content))
+		}
 		file, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
 			Title:           "保存为Markdown",
-			DefaultFilename: fmt.Sprintf("%s[%s]AI分析结果_%s.md", stockName, stockCode, analysisTime),
+			DefaultFilename: filename,
 			Filters: []runtime.FileFilter{
 				{
 					DisplayName: "Markdown",
@@ -3023,14 +3129,14 @@ func (a *App) SummaryStockNews(question string, aiConfigId int, sysPromptId *int
 	}
 
 	for msg := range msgs {
-		runtime.EventsEmit(a.ctx, eventName, msg)
+		events.Emit(a.ctx, eventName, msg)
 	}
 
 	a.summaryMu.Lock()
 	a.summaryCancel = nil
 	a.summaryMu.Unlock()
 
-	runtime.EventsEmit(a.ctx, eventName, "DONE")
+	events.Emit(a.ctx, eventName, "DONE")
 }
 func (a *App) GetIndustryRank(sort string, cnt int) []any {
 	res := data.NewMarketNewsApi().GetIndustryRank(sort, cnt)
@@ -3057,6 +3163,10 @@ func (a *App) GetStockMoneyTrendByDay(stockCode string, days int) []map[string]a
 //	@receiver a
 //	@param url
 func (a *App) OpenURL(url string) {
+	if webmode.Enabled() {
+		events.Emit(a.ctx, "openURL", url)
+		return
+	}
 	runtime.BrowserOpenURL(a.ctx, url)
 }
 
@@ -3068,20 +3178,7 @@ func (a *App) OpenURL(url string) {
 //	@param base64Data
 //	@return error
 func (a *App) SaveImage(name, base64Data string) string {
-	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "保存图片",
-		DefaultFilename: name + "AI分析.png",
-		Filters: []runtime.FileFilter{
-			{
-				DisplayName: "PNG 图片",
-				Pattern:     "*.png",
-			},
-		},
-	})
-	if err != nil || filePath == "" {
-		return "文件路径,无法保存。"
-	}
-
+	filename := name + "AI分析.png"
 	base64Data = strings.ReplaceAll(base64Data, " ", "+")
 	base64Data = strings.ReplaceAll(base64Data, "\n", "")
 	base64Data = strings.ReplaceAll(base64Data, "\r", "")
@@ -3100,6 +3197,22 @@ func (a *App) SaveImage(name, base64Data string) string {
 	}
 	if err != nil {
 		return "文件内容异常,无法保存。" + err.Error()
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat(filename, decodeString)
+	}
+	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "保存图片",
+		DefaultFilename: filename,
+		Filters: []runtime.FileFilter{
+			{
+				DisplayName: "PNG 图片",
+				Pattern:     "*.png",
+			},
+		},
+	})
+	if err != nil || filePath == "" {
+		return "文件路径,无法保存。"
 	}
 
 	err = os.WriteFile(filepath.Clean(filePath), decodeString, os.ModePerm)
@@ -3117,17 +3230,6 @@ func (a *App) SaveImage(name, base64Data string) string {
 //	@param base64Data
 //	@return error
 func (a *App) SaveWordFile(filename string, base64Data string) string {
-	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
-		Title:           "保存 Word 文件",
-		DefaultFilename: filename,
-		Filters: []runtime.FileFilter{
-			{DisplayName: "Word 文件", Pattern: "*.docx"},
-		},
-	})
-	if err != nil || filePath == "" {
-		return "文件路径,无法保存。"
-	}
-
 	base64Data = strings.ReplaceAll(base64Data, " ", "+")
 	base64Data = strings.ReplaceAll(base64Data, "\n", "")
 	base64Data = strings.ReplaceAll(base64Data, "\r", "")
@@ -3146,6 +3248,19 @@ func (a *App) SaveWordFile(filename string, base64Data string) string {
 	}
 	if err != nil {
 		return "文件内容异常,无法保存。" + err.Error()
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat(filename, decodeString)
+	}
+	filePath, err := runtime.SaveFileDialog(a.ctx, runtime.SaveDialogOptions{
+		Title:           "保存 Word 文件",
+		DefaultFilename: filename,
+		Filters: []runtime.FileFilter{
+			{DisplayName: "Word 文件", Pattern: "*.docx"},
+		},
+	})
+	if err != nil || filePath == "" {
+		return "文件路径,无法保存。"
 	}
 	err = os.WriteFile(filepath.Clean(filePath), decodeString, 0777)
 	if err != nil {
@@ -3184,6 +3299,10 @@ func (a *App) SaveAiAssistantSession(sessionId string, messages []models.AiAssis
 	return data.SaveAiAssistantSession(sessionId, messages)
 }
 
+// modelDiscoveryResponseLimit bounds decompressed provider responses before JSON
+// decoding, including bodies without a Content-Length header.
+const modelDiscoveryResponseLimit = 1 << 20 // 1 MiB
+
 // FetchAiModels
 //
 //	@Description: 根据接口地址与 apiKey 自动获取支持的模型列表（OpenAI/DeepSeek 兼容 /models 接口）
@@ -3206,17 +3325,17 @@ func (a *App) FetchAiModels(baseUrl, apiKey, extraHeaders string) []string {
 		Data []modelItem `json:"data"`
 	}
 
-	client := data.SharedHTTPClient
-	client.SetBaseURL(baseUrl)
+	client := data.CreateHTTPClientWithTimeout(30 * time.Second)
 
 	req := client.R().
+		SetResponseBodyLimit(modelDiscoveryResponseLimit).
 		SetHeader("Authorization", "Bearer "+apiKey).
 		SetHeader("Content-Type", "application/json").
 		SetResult(&respData)
 	if extra := data.BuildExtraHeaders(extraHeaders, ""); len(extra) > 0 {
 		req = req.SetHeaders(extra)
 	}
-	resp, err := req.Get("/models")
+	resp, err := req.Get(strings.TrimRight(baseUrl, "/") + "/models")
 	if err != nil {
 		logger.SugaredLogger.Errorf("FetchAiModels error: %v", err)
 		return []string{}
@@ -3266,17 +3385,17 @@ func (a *App) FetchAiModelInfo(baseUrl, apiKey, modelName, extraHeaders string) 
 		}
 		var detail modelDetail
 
-		client := data.SharedHTTPClient
-		client.SetBaseURL(baseUrl)
+		client := data.CreateHTTPClientWithTimeout(30 * time.Second)
 
 		req := client.R().
+			SetResponseBodyLimit(modelDiscoveryResponseLimit).
 			SetHeader("Authorization", "Bearer "+apiKey).
 			SetHeader("Content-Type", "application/json").
 			SetResult(&detail)
 		if extra := data.BuildExtraHeaders(extraHeaders, ""); len(extra) > 0 {
 			req = req.SetHeaders(extra)
 		}
-		resp, err := req.Get("/models/" + modelName)
+		resp, err := req.Get(strings.TrimRight(baseUrl, "/") + "/models/" + modelName)
 
 		if err == nil && !resp.IsError() && detail.ID != "" {
 			// 上下文窗口：优先 max_context_length，其次 context_length
@@ -3380,7 +3499,7 @@ func (a *App) InitCronTasks() {
 	for _, t := range tasks {
 		taskCopy := t
 		entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-			err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+			err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 			if err != nil {
 				logger.SugaredLogger.Errorf("启动任务失败：%v %s", err, taskCopy.Name)
 				return
@@ -3417,7 +3536,7 @@ func (a *App) CreateCronTask(task *models.CronTask) string {
 	}
 	taskCopy := *task
 	entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-		err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+		err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 		if err != nil {
 			logger.SugaredLogger.Errorf("执行任务失败：%v %s", err, taskCopy.Name)
 			return
@@ -3440,7 +3559,7 @@ func (a *App) UpdateCronTask(task *models.CronTask) string {
 	}
 	taskCopy := *task
 	entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-		err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+		err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 		if err != nil {
 			logger.SugaredLogger.Errorf("执行任务失败：%v %s", err, taskCopy.Name)
 			return
@@ -3511,7 +3630,7 @@ func (a *App) EnableCronTask(id uint, enable bool) string {
 		if enable {
 			taskCopy := *task
 			entryID, err := a.cron.AddFunc(taskCopy.CronExpr, func() {
-				err := agent.NewCronTaskApi().ExecuteTask(a.ctx, &taskCopy)
+				err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), &taskCopy)
 				if err != nil {
 					logger.SugaredLogger.Errorf("%s 执行任务失败：%v", taskCopy.Name, err)
 					return
@@ -3542,12 +3661,12 @@ func (a *App) ExecuteCronTaskNow(id uint) string {
 		return fmt.Sprintf("任务不存在：%v", err)
 	}
 
-	go func() {
-		err := agent.NewCronTaskApi().ExecuteTask(a.ctx, task)
+	tenant.Go(func() {
+		err := agent.NewCronTaskApi().ExecuteTask(a.jobContext(), task)
 		if err != nil {
 			logger.SugaredLogger.Errorf("执行任务失败：%v %s", err, task.Name)
 		}
-	}()
+	})
 
 	return "任务执行中"
 }
@@ -3571,12 +3690,12 @@ func (a *App) GetCronTaskTypes() []lo.Tuple2[string, string] {
 //	@param sysPromptId 系统提示词模板 ID（0=内置复盘提示词）
 //	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
 func (a *App) GenerateDailyReviewNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
-	go func() {
-		_, err := agent.NewDailyReviewApi().GenerateDailyReview(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
+	tenant.Go(func() {
+		_, err := agent.NewDailyReviewApi().GenerateDailyReview(a.jobContext(), date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
 		if err != nil {
 			logger.SugaredLogger.Errorf("手动生成复盘报告失败：%v", err)
 		}
-	}()
+	})
 	return "复盘报告生成中，完成后将自动展示"
 }
 
@@ -3612,12 +3731,12 @@ func (a *App) DeleteDailyReview(id uint) string {
 //	@param sysPromptId 系统提示词模板 ID（0=内置盘前策略提示词）
 //	@param agentMode AI 分析模式（""=自动/react/plan_execute/deepagents）
 func (a *App) GenerateMorningStrategyNow(date string, aiConfigId int, sysPromptId int, agentMode string) string {
-	go func() {
-		_, err := agent.NewMorningStrategyApi().GenerateMorningStrategy(a.ctx, date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
+	tenant.Go(func() {
+		_, err := agent.NewMorningStrategyApi().GenerateMorningStrategy(a.jobContext(), date, agent.FirstAiConfigId(aiConfigId), sysPromptId, false, agentMode, "manual")
 		if err != nil {
 			logger.SugaredLogger.Errorf("手动生成盘前策略失败：%v", err)
 		}
-	}()
+	})
 	return "盘前策略生成中，完成后将自动展示"
 }
 
@@ -3768,6 +3887,9 @@ func (a *App) DeleteTradingRecord(id uint) error {
 //   - *data.TradingRecordImportResult: 导入结果汇总
 //   - error: 错误信息
 func (a *App) ImportTradingRecordsFromExcel() (*data.TradingRecordImportResult, error) {
+	if webmode.Enabled() {
+		return nil, errors.New("请使用网页上传成交记录文件")
+	}
 	dialogOptions := runtime.OpenDialogOptions{
 		Title: "选择券商导出的成交记录文件",
 		Filters: []runtime.FileFilter{
@@ -3786,9 +3908,27 @@ func (a *App) ImportTradingRecordsFromExcel() (*data.TradingRecordImportResult, 
 	return data.NewStockDataApi().ImportTradingRecords(filePath)
 }
 
+func (a *App) ImportTradingRecordsFromPath(filePath string) (*data.TradingRecordImportResult, error) {
+	if strings.TrimSpace(filePath) == "" {
+		return nil, errors.New("未选择文件")
+	}
+	resolved, err := agent.RestrictWebUploadPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return data.NewStockDataApi().ImportTradingRecords(resolved)
+}
+
 // ExportTradingRecordTemplate 弹出保存对话框，将交易记录导入模板保存为 Excel（.xlsx）文件。
 // 用户取消保存时返回空字符串，不报错。
 func (a *App) ExportTradingRecordTemplate() (string, error) {
+	xlsxData, err := data.NewStockDataApi().TradingRecordTemplateXLSX()
+	if err != nil {
+		return "", err
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat("交易记录导入模板.xlsx", xlsxData), nil
+	}
 	dialogOptions := runtime.SaveDialogOptions{
 		Title:           "保存交易记录导入模板",
 		DefaultFilename: "交易记录导入模板.xlsx",
@@ -3804,10 +3944,6 @@ func (a *App) ExportTradingRecordTemplate() (string, error) {
 		// 用户取消保存
 		return "", nil
 	}
-	xlsxData, err := data.NewStockDataApi().TradingRecordTemplateXLSX()
-	if err != nil {
-		return "", err
-	}
 	if err := os.WriteFile(filePath, xlsxData, 0644); err != nil {
 		return "", err
 	}
@@ -3820,6 +3956,13 @@ func (a *App) ExportTradingRecordTemplate() (string, error) {
 func (a *App) ExportTableToXLSX(defaultFileName string, table data.ExportTableData) (string, error) {
 	if defaultFileName == "" {
 		defaultFileName = "导出数据.xlsx"
+	}
+	xlsxData, err := data.NewStockDataApi().BuildTableXLSX(table)
+	if err != nil {
+		return "", err
+	}
+	if webmode.Enabled() {
+		return webdownload.PutAndFormat(defaultFileName, xlsxData), nil
 	}
 	dialogOptions := runtime.SaveDialogOptions{
 		Title:           "导出为 Excel",
@@ -3835,10 +3978,6 @@ func (a *App) ExportTableToXLSX(defaultFileName string, table data.ExportTableDa
 	if filePath == "" {
 		// 用户取消保存
 		return "", nil
-	}
-	xlsxData, err := data.NewStockDataApi().BuildTableXLSX(table)
-	if err != nil {
-		return "", err
 	}
 	if err := os.WriteFile(filePath, xlsxData, 0644); err != nil {
 		return "", err
@@ -4031,6 +4170,9 @@ func (a *App) DeleteKBDocument(kbName, docID string) error {
 // 用于知识库文档上传场景：前端调用此方法获取路径后再调用 UploadKBFile。
 // 用户取消选择时返回空字符串。
 func (a *App) PickKBFilePath() (string, error) {
+	if webmode.Enabled() {
+		return "", errors.New("请使用网页选择文件")
+	}
 	dialogOptions := runtime.OpenDialogOptions{
 		Title: "选择知识库文档",
 		Filters: []runtime.FileFilter{
@@ -4045,6 +4187,9 @@ func (a *App) PickKBFilePath() (string, error) {
 // 用于知识库批量导入场景：前端调用此方法获取路径数组后再调用 UploadKBFiles。
 // 用户取消选择时返回空数组。
 func (a *App) PickKBFilePaths() ([]string, error) {
+	if webmode.Enabled() {
+		return nil, errors.New("请使用网页选择文件")
+	}
 	dialogOptions := runtime.OpenDialogOptions{
 		Title: "选择知识库文档（可多选）",
 		Filters: []runtime.FileFilter{
@@ -4248,7 +4393,7 @@ func (a *App) TestMCPServer(id uint) string {
 }
 
 // StartMCPOAuth 启动 MCP 服务器的 OAuth 授权流程：
-// 后端完成元数据发现/客户端注册/loopback 监听，并自动打开系统浏览器。
+// 后端完成元数据发现/客户端注册；桌面用 loopback，Web 用 WEB_PUBLIC_ORIGIN 的共享 HTTP 回调。
 // 授权结果通过服务器状态（status/testResult）反馈，前端刷新列表查看。
 func (a *App) StartMCPOAuth(id uint) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -4261,6 +4406,10 @@ func (a *App) StartMCPOAuth(id uint) string {
 	}
 
 	// 拉起系统浏览器完成腾讯账号登录授权
+	if webmode.Enabled() {
+		events.Emit(a.ctx, "openURL", authURL)
+		return "请在浏览器中完成授权: " + authURL
+	}
 	if a.ctx != nil {
 		runtime.BrowserOpenURL(a.ctx, authURL)
 	}
@@ -4347,6 +4496,9 @@ const (
 // 使用可执行文件所在目录而非 os.Getwd()，确保无论从哪个工作目录启动 go-stock，
 // skills 目录都固定在程序所在目录下；可执行文件路径获取失败时降级到当前工作目录。
 func skillsDir() string {
+	if root := tenant.Root(); root != "" {
+		return filepath.Join(root, "skills")
+	}
 	if exePath, err := os.Executable(); err == nil && exePath != "" {
 		return filepath.Join(filepath.Dir(exePath), "skills")
 	}

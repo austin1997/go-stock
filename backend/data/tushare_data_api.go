@@ -35,7 +35,7 @@ func (receiver TushareApi) GetDaily(tsCode, startDate, endDate string, crawlTime
 	stockType := getStockType(tsCode)
 	tsCodeNEW := getTsCode(tsCode)
 	//logger.SugaredLogger.Debugf("tushare daily request: %s,tsCode:%s,tsCodeNEW:%s", stockType, tsCode, tsCodeNEW)
-	_, err := receiver.client.SetTimeout(time.Duration(crawlTimeOut)*time.Second).R().
+	_, err := clientWithTimeout(receiver.client, time.Duration(crawlTimeOut)*time.Second).R().
 		SetHeader("content-type", "application/json").
 		SetBody(&TushareRequest{
 			ApiName: stockType,

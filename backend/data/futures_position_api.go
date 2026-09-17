@@ -138,7 +138,7 @@ func (f *FuturesPositionApi) GetMainContract(variety string) string {
 
 	u := "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_FUTU_POSITIONCODE&columns=ALL&pageSize=5&pageNumber=1&source=WEB&client=WEB&filter=" +
 		url.QueryEscape(fmt.Sprintf("(TRADE_CODE=\"%s\")(IS_MAINCODE=\"1\")", strings.ToUpper(key)))
-	resp, err := SharedHTTPClient.SetTimeout(10*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(10*time.Second).R().
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("Referer", "https://data.eastmoney.com/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36").
@@ -194,7 +194,7 @@ func (f *FuturesPositionApi) fetchEastMoneyTrend(meta futuresVarietyMeta, contra
 	u := "https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPT_FUTU_NET_POSITION&columns=ALL" +
 		fmt.Sprintf("&pageSize=%d&pageNumber=1&source=WEB&client=WEB&sortColumns=TRADE_DATE&sortTypes=-1&filter=", days) +
 		url.QueryEscape(filter)
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("Referer", "https://data.eastmoney.com/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36").
@@ -322,7 +322,7 @@ func (f *FuturesPositionApi) GetFuturesMemberRank(variety, tradeDate string) []F
 func (f *FuturesPositionApi) fetchCffexRank(varietyUpper string, d time.Time) []FuturesMemberRank {
 	u := fmt.Sprintf("http://www.cffex.com.cn/sj/ccpm/%s/%s/%s_1.csv",
 		d.Format("200601"), d.Format("02"), varietyUpper)
-	resp, err := SharedHTTPClient.SetTimeout(10*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(10*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36").
 		SetHeader("Referer", "http://www.cffex.com.cn/").
 		Get(u)

@@ -32,6 +32,7 @@ import (
 	"sync"
 
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 )
 
 const (
@@ -94,9 +95,9 @@ func SearchAllKnowledge(ctx context.Context, query string, topK int) ([]UnifiedK
 
 	// 检索所有自定义 KB
 	for _, kb := range ListKnowledgeBases() {
-		kbName := kb.Name
+		name := kb.Name
 		wg.Add(1)
-		go func(name string) {
+		tenant.GoContext(ctx, func() {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
@@ -120,12 +121,12 @@ func SearchAllKnowledge(ctx context.Context, query string, topK int) ([]UnifiedK
 				})
 			}
 			mu.Unlock()
-		}(kbName)
+		})
 	}
 
 	// 检索长期记忆（qa_history）
 	wg.Add(1)
-	go func() {
+	tenant.GoContext(ctx, func() {
 		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
@@ -148,7 +149,7 @@ func SearchAllKnowledge(ctx context.Context, query string, topK int) ([]UnifiedK
 			})
 		}
 		mu.Unlock()
-	}()
+	})
 
 	wg.Wait()
 

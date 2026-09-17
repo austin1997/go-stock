@@ -7,6 +7,7 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/webmode"
 	"os"
 	"strings"
 	"time"
@@ -169,6 +170,10 @@ func ExpandHeaderVars(val, sessionId string) string {
 	val = strings.ReplaceAll(val, "{{sessionId}}", s)
 	val = strings.ReplaceAll(val, "{{conversationId}}", s)
 	val = strings.ReplaceAll(val, "{{uuid}}", uuid.NewString())
+	// 网页多租户下禁止展开进程环境变量，避免普通用户把 WEB_ADMIN_PASSWORD 等密钥读到自定义 Header。
+	if webmode.Enabled() {
+		return val
+	}
 	// {{env.VAR}} 环境变量展开（未定义的变量替换为空串）
 	if start := strings.Index(val, "{{env."); start >= 0 {
 		if end := strings.Index(val[start:], "}}"); end > 0 {

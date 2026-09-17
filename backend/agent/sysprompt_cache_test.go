@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"go-stock/backend/tenant"
 )
 
 // TestFileContentCacheHitAndMiss 验证文件级 mtime 缓存的命中/未命中。
@@ -216,6 +218,31 @@ func TestEmbeddingCacheDifferentModels(t *testing.T) {
 	}
 }
 
+func TestEmbeddingCacheTenantIsolation(t *testing.T) {
+	InvalidateEmbeddingCache()
+	callCount := int64(0)
+	mockEmbedFunc := func(ctx context.Context, text string) ([]float32, error) {
+		atomic.AddInt64(&callCount, 1)
+		return []float32{float32(callCount)}, nil
+	}
+	// Each KB owns a callback created while its tenant is bound.
+	tenant.Bind(&tenant.Runtime{UserID: 1})
+	wrapped1 := wrapEmbedFuncWithCache(mockEmbedFunc, "same-model")
+	if _, err := wrapped1(context.Background(), "same text"); err != nil {
+		t.Fatal(err)
+	}
+	tenant.Unbind()
+	tenant.Bind(&tenant.Runtime{UserID: 2})
+	wrapped2 := wrapEmbedFuncWithCache(mockEmbedFunc, "same-model")
+	if _, err := wrapped2(context.Background(), "same text"); err != nil {
+		t.Fatal(err)
+	}
+	tenant.Unbind()
+	if atomic.LoadInt64(&callCount) != 2 {
+		t.Fatalf("callCount=%d want 2", callCount)
+	}
+}
+
 // TestEmbeddingCacheEmptyText 验证空文本不缓存。
 func TestEmbeddingCacheEmptyText(t *testing.T) {
 	InvalidateEmbeddingCache()
@@ -377,5 +404,23 @@ func TestGetStaticXPrompt(t *testing.T) {
 	th, thTokens := getStaticThinkingPrompt()
 	if th == "" || thTokens <= 0 {
 		t.Error("getStaticThinkingPrompt should return non-empty string and positive tokens")
+	}
+}
+
+func TestPromptTemplateCacheKeyTenantIsolation(t *testing.T) {
+	tenant.Bind(&tenant.Runtime{UserID: 1})
+	k1 := currentPromptTemplateKey(42)
+	tenant.Unbind()
+	tenant.Bind(&tenant.Runtime{UserID: 2})
+	k2 := currentPromptTemplateKey(42)
+	tenant.Unbind()
+	if k1 == k2 {
+		t.Fatal("same template id must not share a cache key across tenants")
+	}
+	if k1.id != 42 || k2.id != 42 {
+		t.Fatalf("id should be preserved: %+v %+v", k1, k2)
+	}
+	if k1.tenant != 1 || k2.tenant != 2 {
+		t.Fatalf("tenant should differ: %+v %+v", k1, k2)
 	}
 }

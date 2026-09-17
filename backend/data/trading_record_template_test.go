@@ -91,3 +91,44 @@ func TestParseTradingImportFileHeaderText(t *testing.T) {
 		t.Fatalf("数据不符: %+v", rows[0])
 	}
 }
+
+func TestReadCappedRegularFileRejectsNonRegular(t *testing.T) {
+	if _, err := parseTradingImportFile(t.TempDir()); err == nil {
+		t.Fatal("directory should be rejected")
+	}
+	if _, err := parseTradingImportFile("/dev/zero"); err == nil {
+		t.Fatal("/dev/zero should be rejected")
+	}
+}
+
+func TestReadCappedRegularFileRejectsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.txt")
+	if err := os.WriteFile(target, []byte("成交日期\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parseTradingImportFile(link); err == nil {
+		t.Fatal("symlink should be rejected")
+	}
+}
+
+func TestReadCappedRegularFileEnforcesLimit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.bin")
+	if err := os.WriteFile(path, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readCappedRegularFile(path, 4); err == nil {
+		t.Fatal("oversize file should be rejected")
+	}
+	got, err := readCappedRegularFile(path, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "hello" {
+		t.Fatalf("got %q", got)
+	}
+}

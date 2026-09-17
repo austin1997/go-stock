@@ -4,7 +4,8 @@ import (
 	"context"
 	"sync"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"go-stock/backend/events"
+	"go-stock/backend/tenant"
 )
 
 // @Author spark
@@ -32,8 +33,11 @@ func EmitStockDataChanged() {
 	appCtxMu.RLock()
 	ctx := appCtx
 	appCtxMu.RUnlock()
+	if rt := tenant.Current(); rt != nil {
+		ctx = tenant.WithRuntime(context.Background(), rt)
+	}
 	if ctx == nil {
 		return
 	}
-	go runtime.EventsEmit(ctx, "stockDataChanged", "")
+	go events.Emit(ctx, "stockDataChanged", "")
 }

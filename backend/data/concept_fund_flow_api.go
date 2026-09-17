@@ -33,7 +33,7 @@ type conceptFundFlowResponse struct {
 func (c *ConceptFundFlowApi) FetchAndSave() (int, error) {
 	url := "https://data.eastmoney.com/dataapi/bkzj/getbkzj?key=f62&code=m%3A90%2Bt%3A3"
 
-	resp, err := SharedHTTPClient.SetTimeout(30*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(30*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36").
 		SetHeader("Referer", "https://data.eastmoney.com/").
 		Get(url)
@@ -214,7 +214,7 @@ func (c *ConceptFundFlowApi) GetConceptFundFlowRankListByDate(date string, topN 
 func (c *ConceptFundFlowApi) GetAllConceptCodes() []map[string]string {
 	url := "https://data.eastmoney.com/dataapi/bkzj/getbkzj?key=f62&code=m%3A90%2Bt%3A3"
 
-	resp, err := SharedHTTPClient.SetTimeout(30*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(30*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36").
 		SetHeader("Referer", "https://data.eastmoney.com/").
 		Get(url)

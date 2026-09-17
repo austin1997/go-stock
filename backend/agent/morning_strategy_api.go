@@ -10,6 +10,7 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 )
 
 // MorningStrategyApi 盘前策略 API
@@ -105,6 +106,16 @@ func (a *MorningStrategyApi) GenerateMorningStrategy(ctx context.Context, date s
 	}
 	emitter.flush()
 
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			strategy.Status = "failed"
+			strategy.ErrorMessage = "已取消"
+			strategy.DurationMs = time.Since(start).Milliseconds()
+			db.Dao.Save(&strategy)
+			return nil, err
+		}
+	}
+
 	result := strings.TrimSpace(content.String())
 	generatedAt := time.Now()
 	if result == "" {
@@ -126,8 +137,10 @@ func (a *MorningStrategyApi) GenerateMorningStrategy(ctx context.Context, date s
 	}
 
 	logger.SugaredLogger.Infof("盘前策略生成完成：%s（耗时 %dms）", date, strategy.DurationMs)
-	// 同步保存到 AI 分析报告，供研究中心查看
-	go data.NewDeepSeekOpenAi(ctx, aiConfigId).SaveAIResponseResult("盘前策略", "盘前策略", result, "", prompt)
+	// 异步保存到当前租户的 AI 分析报告，供研究中心查看。
+	tenant.GoContext(ctx, func() {
+		data.NewDeepSeekOpenAi(ctx, aiConfigId).SaveAIResponseResult("盘前策略", "盘前策略", result, "", prompt)
+	})
 	a.emitEvent(ctx, date, strategy)
 	return &strategy, nil
 }

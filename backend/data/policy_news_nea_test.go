@@ -3,6 +3,8 @@ package data
 import (
 	"fmt"
 	"testing"
+
+	"go-stock/backend/tenant"
 )
 
 // TestFetchNeaPolicyNews 验证能源局 datasource JSON 抓取器（需联网）
@@ -54,5 +56,33 @@ func TestLoadKeyDepartments(t *testing.T) {
 	depts[0] = "modified"
 	if loadKeyDepartments()[0] == "modified" {
 		t.Fatal("loadKeyDepartments 返回了默认列表本体（未做副本）")
+	}
+}
+
+func TestKeyDepartmentsTenantIsolation(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	tenant.Bind(&tenant.Runtime{UserID: 21, Root: dir1})
+	if err := NewPolicyNewsApi().SaveKeyDepartments([]string{"财政部"}); err != "" {
+		t.Fatal(err)
+	}
+	tenant.Unbind()
+
+	tenant.Bind(&tenant.Runtime{UserID: 22, Root: dir2})
+	if err := NewPolicyNewsApi().SaveKeyDepartments([]string{"商务部"}); err != "" {
+		t.Fatal(err)
+	}
+	got := loadKeyDepartments()
+	if len(got) != 1 || got[0] != "商务部" {
+		t.Fatalf("租户22 departments=%v", got)
+	}
+	tenant.Unbind()
+
+	tenant.Bind(&tenant.Runtime{UserID: 21, Root: dir1})
+	t.Cleanup(tenant.Unbind)
+	got = loadKeyDepartments()
+	if len(got) != 1 || got[0] != "财政部" {
+		t.Fatalf("租户21 departments=%v", got)
 	}
 }

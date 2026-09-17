@@ -15,21 +15,27 @@ package agent
 import (
 	"fmt"
 	"strings"
-	"sync/atomic"
+	"sync"
 
 	"go-stock/backend/agent/tools"
 	"go-stock/backend/data"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 )
 
 // StockBasicInfoKBName A股基础数据知识库名称（公司基础资料、季度财务、机构预测等共用的统一知识库）
 const StockBasicInfoKBName = "A股基础数据"
 
-// kbEmbeddingUnavailable 缓存"全局 embedding 配置不可用"的判断结果。
-// 首次发现不可用后置 true，后续 MaybeVectorizeStockData 直接静默跳过，避免反复触发
-// initLongTermMemoryStore（其失败时无短路标志，会重复打 warn 日志）。
-// 用户配置 embedding 服务后重启程序即可重置。
-var kbEmbeddingUnavailable atomic.Bool
+var kbEmbeddingUnavailable sync.Map
+
+func embeddingUnavailable() bool {
+	v, ok := kbEmbeddingUnavailable.Load(memoryTenantKey())
+	return ok && v.(bool)
+}
+
+func markEmbeddingUnavailable() {
+	kbEmbeddingUnavailable.Store(memoryTenantKey(), true)
+}
 
 func init() {
 	// 注入自动向量化函数到 tools 包，避免 tools→agent 循环依赖
@@ -61,14 +67,14 @@ func MaybeVectorizeStockData(sourceKey, content, dataType string) {
 		return
 	}
 	// 已确认 embedding 配置不可用则静默跳过（避免日志噪音与无效 API 调用）
-	if kbEmbeddingUnavailable.Load() {
+	if embeddingUnavailable() {
 		return
 	}
 	// 确保 KB 存在（存在则跳过）。若 embedding 配置不可用导致创建失败，
 	// 标记 kbEmbeddingUnavailable=true，后续调用直接静默跳过。
 	if err := ensureStockBasicInfoKB(); err != nil {
 		if getKBEmbedFunc() == nil {
-			kbEmbeddingUnavailable.Store(true)
+			markEmbeddingUnavailable()
 			logger.SugaredLogger.Warnf("MaybeVectorizeStockData: embedding 配置不可用，已禁用自动向量化直至重启: %v", err)
 			return
 		}
@@ -80,22 +86,19 @@ func MaybeVectorizeStockData(sourceKey, content, dataType string) {
 		return
 	}
 	// 后台异步入库
-	go func() {
+	tenant.Go(func() {
 		extraMeta := map[string]string{
 			"source_key": sourceKey,
 			"type":       dataType,
 		}
 		docIDs, err := AddDocumentToKB(StockBasicInfoKBName, content, sourceKey, extraMeta)
 		if err != nil {
-			// 附带 embedding 配置诊断信息，便于定位"配置了非 embedding 类型的 AI 服务"等问题。
-			// chromem-go 的错误只含 HTTP 状态码（如 "404 Not Found"）不含响应体，
-			// 单看错误无法判断是哪个 AIConfig/模型出问题，故在此补充配置上下文。
 			logger.SugaredLogger.Warnf("MaybeVectorizeStockData: 入库失败 sourceKey=%s type=%s kb=%s embedding=%s: %v",
 				sourceKey, dataType, StockBasicInfoKBName, describeKBEmbeddingConfig(StockBasicInfoKBName), err)
 			return
 		}
 		logger.SugaredLogger.Infof("MaybeVectorizeStockData: 入库成功 sourceKey=%s type=%s chunks=%d", sourceKey, dataType, len(docIDs))
-	}()
+	})
 }
 
 // describeKBEmbeddingConfig 返回指定 KB 实际使用的 embedding 配置摘要，用于入库失败时的诊断日志。
@@ -104,7 +107,7 @@ func MaybeVectorizeStockData(sourceKey, content, dataType string) {
 func describeKBEmbeddingConfig(kbName string) string {
 	initKBMeta()
 	kbMetaMu.RLock()
-	info, exists := kbMetaInMemory[kbName]
+	info, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists || info == nil {
 		return "<kb not found>"
@@ -172,7 +175,7 @@ func describeKBEmbeddingConfig(kbName string) string {
 func ensureStockBasicInfoKB() error {
 	initKBMeta()
 	kbMetaMu.RLock()
-	_, exists := kbMetaInMemory[StockBasicInfoKBName]
+	_, exists := kbMeta()[StockBasicInfoKBName]
 	kbMetaMu.RUnlock()
 	if exists {
 		return nil
@@ -183,7 +186,7 @@ func ensureStockBasicInfoKB() error {
 	if err != nil {
 		// 并发创建时另一个 goroutine 可能已创建成功
 		kbMetaMu.RLock()
-		_, exists2 := kbMetaInMemory[StockBasicInfoKBName]
+		_, exists2 := kbMeta()[StockBasicInfoKBName]
 		kbMetaMu.RUnlock()
 		if exists2 {
 			return nil
@@ -198,7 +201,7 @@ func isSourceInKB(kbName, source string) bool {
 	initKBMeta()
 	kbMetaMu.RLock()
 	defer kbMetaMu.RUnlock()
-	info, exists := kbMetaInMemory[kbName]
+	info, exists := kbMeta()[kbName]
 	if !exists || info == nil {
 		return false
 	}

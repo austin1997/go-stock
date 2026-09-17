@@ -22,6 +22,8 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
+	"go-stock/backend/webmode"
 
 	"gorm.io/gorm"
 )
@@ -321,6 +323,9 @@ func randomState() (string, error) {
 // StartOAuth 启动 OAuth 授权：发现元数据 → （复用或新建）客户端注册 →
 // 起 loopback HTTP 服务等回调 → 返回授权 URL（调用方拉起系统浏览器）。
 func (a *MCPServerApi) StartOAuth(ctx context.Context, id uint) (string, error) {
+	if webmode.Enabled() {
+		return a.startWebOAuth(ctx, id)
+	}
 	server, err := a.GetByID(id)
 	if err != nil {
 		return "", err
@@ -407,12 +412,17 @@ func (a *MCPServerApi) StartOAuth(ctx context.Context, id uint) (string, error) 
 		TokenURL:    as.TokenEndpoint,
 		CreatedAt:   time.Now(),
 	}
+	rt := tenant.Capture()
 
 	mux := http.NewServeMux()
 	srv := &http.Server{Handler: mux}
 	flow.Server = srv
 
 	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		if rt != nil {
+			tenant.Bind(rt)
+			defer tenant.Unbind()
+		}
 		a.handleOAuthCallback(w, r, id, flow)
 	})
 
@@ -422,6 +432,10 @@ func (a *MCPServerApi) StartOAuth(ctx context.Context, id uint) (string, error) 
 	}()
 	go func() {
 		time.Sleep(3 * time.Minute)
+		if rt != nil {
+			tenant.Bind(rt)
+			defer tenant.Unbind()
+		}
 		oauthFlowMu.Lock()
 		if f, ok := oauthFlows[id]; ok && f == flow {
 			_ = srv.Close()

@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/coocood/freecache"
+
+	"go-stock/backend/tenant"
 )
 
 // toolResultCache 工具结果内存缓存。
@@ -13,7 +15,8 @@ import (
 // 减少对东方财富 F10 接口的重复请求，降低 Agent 多步推理时的网络时延。
 // 行情类、新闻类等高频变化数据走短 TTL（10s）或不缓存。
 //
-// 缓存 key = 工具名 + "|" + 规范化参数 JSON，按工具名分别设置 TTL。
+// 缓存 key = 租户 ID + "|" + 工具名 + "|" + 规范化参数 JSON，按工具名分别设置 TTL。
+// 网页版各用户 SQLite 自增 ID 会重启，必须带上 tenant.UserID()，否则会串读提示词/交易记录等。
 var toolResultCache = freecache.NewCache(8 * 1024 * 1024) // 8MB
 
 // cacheTTLByTool 各工具的精确缓存 TTL（秒），覆盖组级默认。
@@ -115,14 +118,11 @@ func cacheTTLForTool(name string) int {
 	return 0
 }
 
-// buildCacheKey 构造工具结果缓存 key：工具名 + 规范化参数。
-// 规范化：去除参数 JSON 中首尾空白与多余空格，避免相同语义参数产生不同 key。
+// buildCacheKey 构造工具结果缓存 key：租户 + 工具名 + 规范化参数。
+// 规范化：去除参数 JSON 中首尾空白，避免相同语义参数产生不同 key。
 func buildCacheKey(toolName, argsJSON string) string {
 	args := strings.TrimSpace(argsJSON)
-	if args == "" {
-		return toolName + "|"
-	}
-	return fmt.Sprintf("%s|%s", toolName, args)
+	return fmt.Sprintf("%d|%s|%s", tenant.UserID(), toolName, args)
 }
 
 // getCachedToolResult 查询缓存，命中返回 (结果, true)，否则返回 ("", false)。

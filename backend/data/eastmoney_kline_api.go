@@ -49,7 +49,7 @@ func setEastMoneyKlineBrowserHeaders(r *resty.Request, referer string) {
 // fetchKLineJSONBytesByHTTP 每次调用均发起真实 GET，不缓存 K 线响应；cookieHeader 仅来自 chromedp 缓存或当次刷新。
 // 由于 Transport 设置了 DisableCompression=true，需要手动处理 gzip 解压。
 func (receiver *EastMoneyKLineApi) fetchKLineJSONBytesByHTTP(reqURL string) ([]byte, error) {
-	req := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut) * time.Second).R()
+	req := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R()
 	setEastMoneyKlineBrowserHeaders(req, "https://quote.eastmoney.com")
 	// 使用缓存的 Cookie，pageURL 参数传空字符串由函数内部使用默认值
 	//cookieHeader, err := FetchEastMoneyCookiesViaChromedp("", time.Second*5, reqURL)

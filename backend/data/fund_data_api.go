@@ -122,7 +122,7 @@ func (f *FundApi) CrawlFundBasic(fundCode string) (*FundBasic, error) {
 
 func (f *FundApi) crawlFundBasicViaHTML(fundCode string) (*FundBasic, error) {
 	url := fmt.Sprintf("http://fund.eastmoney.com/%s.html", fundCode)
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
 		SetHeader("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8").
@@ -299,7 +299,7 @@ var (
 
 func (f *FundApi) crawlFundBasicViaPingZhongData(fundCode string) (*FundBasic, error) {
 	url := fmt.Sprintf("http://fund.eastmoney.com/pingzhongdata/%s.js", fundCode)
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", fmt.Sprintf("http://fund.eastmoney.com/%s.html", fundCode)).
 		Get(url)
@@ -407,7 +407,7 @@ func (f *FundApi) parseFluctuationScaleJSON(fund *FundBasic, jsonStr string) {
 func (f *FundApi) crawlFundNetValueViaAPI(fund *FundBasic, fundCode string) {
 	url := fmt.Sprintf("http://api.fund.eastmoney.com/f10/lsjz?fundCode=%s&pageIndex=1&pageSize=1&startDate=&endDate=&_%d",
 		fundCode, time.Now().UnixMilli())
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", fmt.Sprintf("http://fundf10.eastmoney.com/jjjz_%s.html", fundCode)).
 		Get(url)
@@ -453,7 +453,7 @@ func (f *FundApi) GetFundList(key string) []FundBasic {
 
 func (f *FundApi) searchFundOnline(key string) {
 	url := fmt.Sprintf("https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?callback=&m=1&key=%s", key)
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", "https://fund.eastmoney.com/").
 		Get(url)
@@ -702,7 +702,7 @@ func (f *FundApi) batchCrawlFundData(funds []FollowedFund) {
 	if len(sinajsList) > 0 {
 		listStr := strings.Join(sinajsList, ",")
 		reqURL := fmt.Sprintf("http://hq.sinajs.cn/rn=%d&list=%s", time.Now().UnixMilli(), listStr)
-		resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+		resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 			SetHeader("Host", "hq.sinajs.cn").
 			SetHeader("User-Agent", getRandomUA()).
 			SetHeader("Referer", "https://finance.sina.com.cn").
@@ -959,7 +959,7 @@ func (f *FundApi) AllFund() {
 		}
 	}()
 
-	response, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	response, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", "https://fund.eastmoney.com/").
 		Get("https://fund.eastmoney.com/allfund.html")
@@ -1009,7 +1009,7 @@ func (f *FundApi) CrawlFundNetEstimatedUnit(code string) {
 		return
 	}
 	var fundNetUnitValue FundNetUnitValue
-	response, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	response, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", "https://fund.eastmoney.com/").
 		SetQueryParams(map[string]string{"rt": strconv.FormatInt(time.Now().UnixMilli(), 10)}).
@@ -1049,7 +1049,7 @@ func (f *FundApi) CrawlFundNetEstimatedUnit(code string) {
 }
 
 func (f *FundApi) crawlFundEstimatedViaSina(code string) {
-	response, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	response, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", "https://finance.sina.com.cn/").
 		Get(fmt.Sprintf("http://hq.sinajs.cn/list=fu_%s", code))
@@ -1109,7 +1109,7 @@ func (f *FundApi) crawlFundEstimatedViaMobileAPI(code string) {
 	}
 
 	url := fmt.Sprintf("https://fundmobapi.eastmoney.com/FundMNewApi/FundMNFInfo?pageIndex=1&pageSize=1&plat=Android&appType=ttjj&product=EFund&Version=1&deviceid=1&Ession=1&Fcodes=%s", code)
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		Get(url)
 	if err != nil || resp.StatusCode() != 200 {
@@ -1173,7 +1173,7 @@ func (f *FundApi) crawlOnExchangeFundQuote(code string) {
 		return
 	}
 	url := fmt.Sprintf("http://hq.sinajs.cn/rn=%d&list=%s", time.Now().UnixMilli(), sinaCode)
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "hq.sinajs.cn").
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", "https://finance.sina.com.cn").
@@ -1220,7 +1220,7 @@ func (f *FundApi) CrawlFundNetUnitValue(code string) {
 		return
 	}
 	url := fmt.Sprintf("http://hq.sinajs.cn/rn=%d&list=f_%s", time.Now().UnixMilli(), code)
-	response, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	response, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "hq.sinajs.cn").
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", "https://finance.sina.com.cn").
@@ -1314,7 +1314,7 @@ func (f *FundApi) GetFundHistoryNetValue(fundCode string, pageIndex, pageSize in
 	}
 	url := fmt.Sprintf("http://api.fund.eastmoney.com/f10/lsjz?fundCode=%s&pageIndex=%d&pageSize=%d&startDate=%s&endDate=%s&_%d",
 		fundCode, pageIndex, pageSize, startDate, endDate, time.Now().UnixMilli())
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", fmt.Sprintf("http://fundf10.eastmoney.com/jjjz_%s.html", fundCode)).
 		Get(url)
@@ -1564,7 +1564,7 @@ func (f *FundApi) fillHoldingStockQuotes(holdings []FundHoldingStock) {
 
 	if len(aCodes) > 0 {
 		url := fmt.Sprintf("http://hq.sinajs.cn/rn=%d&list=%s", time.Now().UnixMilli(), strings.Join(aCodes, ","))
-		resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+		resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 			SetHeader("Host", "hq.sinajs.cn").
 			SetHeader("User-Agent", getRandomUA()).
 			SetHeader("Referer", "https://finance.sina.com.cn").
@@ -1579,7 +1579,7 @@ func (f *FundApi) fillHoldingStockQuotes(holdings []FundHoldingStock) {
 
 	if len(hkCodes) > 0 {
 		url := fmt.Sprintf("http://hq.sinajs.cn/rn=%d&list=%s", time.Now().UnixMilli(), strings.Join(hkCodes, ","))
-		resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+		resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 			SetHeader("Host", "hq.sinajs.cn").
 			SetHeader("User-Agent", getRandomUA()).
 			SetHeader("Referer", "https://finance.sina.com.cn").
@@ -1594,7 +1594,7 @@ func (f *FundApi) fillHoldingStockQuotes(holdings []FundHoldingStock) {
 
 	if len(usCodes) > 0 {
 		url := fmt.Sprintf("http://hq.sinajs.cn/rn=%d&list=%s", time.Now().UnixMilli(), strings.Join(usCodes, ","))
-		resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+		resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 			SetHeader("Host", "hq.sinajs.cn").
 			SetHeader("User-Agent", getRandomUA()).
 			SetHeader("Referer", "https://finance.sina.com.cn").
@@ -1805,7 +1805,7 @@ func (f *FundApi) SearchFundCodes(keyword string) []FundSearchItem {
 		return []FundSearchItem{}
 	}
 	url := fmt.Sprintf("https://fundsuggest.eastmoney.com/FundSearch/api/FundSearchAPI.ashx?callback=&m=1&key=%s", keyword)
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", "https://fund.eastmoney.com/").
 		Get(url)
@@ -1907,7 +1907,7 @@ func (f *FundApi) GetFundRanking(marketType, fundType, sortField, sortOrder stri
 		queryParams["dx"] = "1"
 	}
 
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Referer", referer).
 		SetQueryParams(queryParams).
@@ -2009,7 +2009,7 @@ func (f *FundApi) getTop10HoldingsViaHTML(fundCode string) ([]FundHoldingStock, 
 	url := fmt.Sprintf("https://fundf10.eastmoney.com/FundArchivesDatas.aspx?type=jjcc&code=%s&topline=10&year=&month=&rt=%f",
 		fundCode, float64(time.Now().UnixMilli())/1000.0)
 
-	resp, err := f.client.SetTimeout(time.Duration(f.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(f.client, time.Duration(f.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("User-Agent", getRandomUA()).
 		SetHeader("Accept", "*/*").
 		SetHeader("Referer", fmt.Sprintf("https://fundf10.eastmoney.com/ccmx_%s.html", fundCode)).

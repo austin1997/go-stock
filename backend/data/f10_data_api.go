@@ -16,7 +16,7 @@ import (
 const emF10BaseURL = "https://datacenter.eastmoney.com/securities/api/data/v1/get"
 
 func (receiver StockDataApi) f10Request(url string, result any) error {
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Host", "datacenter.eastmoney.com").
 		SetHeader("Referer", "https://emweb.securities.eastmoney.com/").
 		SetHeader("Origin", "https://emweb.securities.eastmoney.com").
@@ -896,7 +896,7 @@ func normalizeHKF10Code(stockCode string) string {
 func (receiver StockDataApi) GetHKStockLatestFinance(stockCode string) (*HKF10MainIndicatorResp, error) {
 	code := normalizeHKF10Code(stockCode)
 	url := "http://emweb.securities.eastmoney.com/PC_HKF10/NewFinancialAnalysis/GetZYZB?code=" + code
-	resp, err := receiver.client.SetTimeout(time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
+	resp, err := clientWithTimeout(receiver.client, time.Duration(receiver.config.CrawlTimeOut)*time.Second).R().
 		SetHeader("Referer", "https://emweb.securities.eastmoney.com/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:148.0) Gecko/20100101 Firefox/148.0").
 		Get(url)
