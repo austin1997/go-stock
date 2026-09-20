@@ -9,6 +9,8 @@ services:
       WEB_ADDR: ":8080"
       WEB_STATIC_DIR: /app/frontend/dist
       GO_STOCK_ROOT_DIR: /app
+      # 解除本地 VIP2 功能门禁（K线/AI助手/自选上限/资讯同步等）。广场 VIP 内容仍由远端校验。
+      GO_STOCK_UNLOCK_LOCAL_VIP: "true"
       # 首次启动必须设置管理员，否则容器会退出：
       # WEB_ADMIN_USER: admin
       # WEB_ADMIN_PASSWORD: change-me
