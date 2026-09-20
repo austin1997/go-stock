@@ -131,3 +131,16 @@ func TestGetLatestTradingDay(t *testing.T) {
 	date := app.GetLatestTradingDay()
 	t.Log(date)
 }
+
+func TestGetSponsorInfoWhenLocalVipUnlocked(t *testing.T) {
+	t.Setenv(data.LocalVipUnlockEnv, "true")
+	app := &App{}
+	info := app.GetSponsorInfo()
+	if info["vipLevel"] != 2 {
+		t.Fatalf("GetSponsorInfo vipLevel=%v, want 2", info["vipLevel"])
+	}
+	vip := app.GetEffectiveSponsorVip()
+	if vip["vipLevel"] != 2 || vip["active"] != true {
+		t.Fatalf("GetEffectiveSponsorVip=%v, want vipLevel=2 active=true", vip)
+	}
+}

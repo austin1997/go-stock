@@ -4,12 +4,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/duke-git/lancet/v2/convertor"
 	"github.com/duke-git/lancet/v2/cryptor"
 )
+
+// LocalVipUnlockEnv 为 true/1/yes/on 时解除本地 VIP2 功能门禁（不影响广场远端校验）。
+const LocalVipUnlockEnv = "GO_STOCK_UNLOCK_LOCAL_VIP"
 
 // DefaultSponsorAESKeyHex 与 main.checkDir 在 BuildKey 为空时的回退值一致，
 // 供 ai-assistant-web 等独立进程解密本地配置中的赞助码。
@@ -49,9 +53,32 @@ func SafeDecryptSponsorCode(sponsorCode, keyHex string) (raw []byte, err error) 
 	return cryptor.AesEcbDecrypt(encrypted, key), nil
 }
 
+// LocalVipUnlocked 是否通过环境变量解除本地 VIP 功能限制。
+func LocalVipUnlocked() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(LocalVipUnlockEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// UnlockedLocalSponsorInfo 无有效赞助码时供界面展示的本地解锁信息（不写入赞助码，不含 CDN 下载地址）。
+func UnlockedLocalSponsorInfo() map[string]any {
+	return map[string]any{
+		"vipLevel":     2,
+		"vipStartTime": "2000-01-01 00:00:00",
+		"vipEndTime":   "2099-12-31 23:59:59",
+		"vipAuthTime":  "2000-01-01 00:00:00",
+	}
+}
+
 // EffectiveSponsorVipLevel 根据设置中的 sponsorCode 解析 VIP 等级，并按 vipAuthTime / vipStartTime / vipEndTime 判断是否当前有效。
 // 与 app.isVip 时间判断逻辑保持一致。
 func EffectiveSponsorVipLevel() (level int, active bool) {
+	if LocalVipUnlocked() {
+		return 2, true
+	}
 	keyHex := strings.TrimSpace(SponsorDecryptKeyHex)
 	if keyHex == "" {
 		keyHex = DefaultSponsorAESKeyHex
@@ -77,4 +104,12 @@ func EffectiveSponsorVipLevel() (level int, active bool) {
 		return lvl, true
 	}
 	return lvl, false
+}
+
+const maxNonVipFollowCount = 63
+
+// followCountLimited 非有效 VIP 时自选数量达到上限则不可再加。
+func followCountLimited(count int64) bool {
+	_, active := EffectiveSponsorVipLevel()
+	return !active && count >= maxNonVipFollowCount
 }

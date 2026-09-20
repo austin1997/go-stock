@@ -143,6 +143,9 @@ func (a *App) removeCronEntry(key string) {
 }
 
 func (a *App) GetSponsorInfo() map[string]any {
+	if data.LocalVipUnlocked() && len(a.SponsorInfo) == 0 {
+		return data.UnlockedLocalSponsorInfo()
+	}
 	return a.SponsorInfo
 }
 
@@ -317,11 +320,14 @@ func (a *App) CheckUpdate(flag int) {
 		raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
 		if err != nil {
 			logger.SugaredLogger.Errorf("赞助码解密失败: %s", err.Error())
-			return
-		}
-		if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
+			if !data.LocalVipUnlocked() {
+				return
+			}
+		} else if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
 			logger.SugaredLogger.Error(err.Error())
-			return
+			if !data.LocalVipUnlocked() {
+				return
+			}
 		}
 	}
 
@@ -657,65 +663,80 @@ func (a *App) isVip(sponsorCode string, downloadUrl string, releaseVersion *mode
 		raw, err := data.SafeDecryptSponsorCode(sponsorCode, BuildKey)
 		if err != nil {
 			logger.SugaredLogger.Errorf("赞助码解密失败: %s", err.Error())
-			return "", "0", false
-		}
-		if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
+			if !data.LocalVipUnlocked() {
+				return "", "0", false
+			}
+		} else if err = json.Unmarshal(raw, &a.SponsorInfo); err != nil {
 			logger.SugaredLogger.Error(err.Error())
-			return "", "0", false
-		}
-		// 赞助码 JSON 字段类型不保证（如 vipLevel 可能为数字），统一用 convertor.ToString 安全转换，
-		// 禁止 .(string) 硬断言（interface conversion panic 会导致整个进程闪退）
-		vipLevel = convertor.ToString(a.SponsorInfo["vipLevel"])
-		vipStartTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipStartTime"]), time.Local)
-		vipEndTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipEndTime"]), time.Local)
-		vipAuthTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipAuthTime"]), time.Local)
-		if err != nil {
-			logger.SugaredLogger.Error(err.Error())
-			return "", vipLevel, false
-		}
-
-		if time.Now().After(vipAuthTime) && time.Now().After(vipStartTime) && time.Now().Before(vipEndTime) {
-			isVip = true
-		}
-
-		if IsWindows() {
-			winAssetName := "go-stock-windows-amd64.exe"
-			if IsArm64() {
-				winAssetName = "go-stock-windows-arm64.exe"
+			if !data.LocalVipUnlocked() {
+				return "", "0", false
 			}
-			if isVip {
-				if a.SponsorInfo["winDownUrl"] == nil {
-					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
-				} else {
-					downloadUrl = convertor.ToString(a.SponsorInfo["winDownUrl"])
+		} else {
+			// 赞助码 JSON 字段类型不保证（如 vipLevel 可能为数字），统一用 convertor.ToString 安全转换，
+			// 禁止 .(string) 硬断言（interface conversion panic 会导致整个进程闪退）
+			vipLevel = convertor.ToString(a.SponsorInfo["vipLevel"])
+			vipStartTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipStartTime"]), time.Local)
+			vipEndTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipEndTime"]), time.Local)
+			vipAuthTime, err := time.ParseInLocation("2006-01-02 15:04:05", convertor.ToString(a.SponsorInfo["vipAuthTime"]), time.Local)
+			if err != nil {
+				logger.SugaredLogger.Error(err.Error())
+				if !data.LocalVipUnlocked() {
+					return "", vipLevel, false
 				}
 			} else {
-				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
-			}
-		}
-		if IsMacOS() {
-			if isVip {
-				if a.SponsorInfo["macDownUrl"] == nil {
-					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
-				} else {
-					downloadUrl = convertor.ToString(a.SponsorInfo["macDownUrl"])
+				if time.Now().After(vipAuthTime) && time.Now().After(vipStartTime) && time.Now().Before(vipEndTime) {
+					isVip = true
 				}
-			} else {
-				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
-			}
-		}
-		if IsLinux() {
-			if isVip {
-				if a.SponsorInfo["linuxDownUrl"] == nil {
-					downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
-				} else {
-					downloadUrl = convertor.ToString(a.SponsorInfo["linuxDownUrl"])
-				}
-			} else {
-				downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
-			}
-		}
 
+				if IsWindows() {
+					winAssetName := "go-stock-windows-amd64.exe"
+					if IsArm64() {
+						winAssetName = "go-stock-windows-arm64.exe"
+					}
+					if isVip {
+						if a.SponsorInfo["winDownUrl"] == nil {
+							downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
+						} else {
+							downloadUrl = convertor.ToString(a.SponsorInfo["winDownUrl"])
+						}
+					} else {
+						downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/%s", releaseVersion.TagName, winAssetName)
+					}
+				}
+				if IsMacOS() {
+					if isVip {
+						if a.SponsorInfo["macDownUrl"] == nil {
+							downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
+						} else {
+							downloadUrl = convertor.ToString(a.SponsorInfo["macDownUrl"])
+						}
+					} else {
+						downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-darwin-universal", releaseVersion.TagName)
+					}
+				}
+				if IsLinux() {
+					if isVip {
+						if a.SponsorInfo["linuxDownUrl"] == nil {
+							downloadUrl = fmt.Sprintf("https://gh.927223.xyz/https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
+						} else {
+							downloadUrl = convertor.ToString(a.SponsorInfo["linuxDownUrl"])
+						}
+					} else {
+						downloadUrl = fmt.Sprintf("https://github.com/ArvinLovegood/go-stock/releases/download/%s/go-stock-linux-amd64", releaseVersion.TagName)
+					}
+				}
+			}
+		}
+	}
+	if data.LocalVipUnlocked() {
+		if len(a.SponsorInfo) == 0 {
+			a.SponsorInfo = data.UnlockedLocalSponsorInfo()
+		}
+		lvl, _ := convertor.ToInt(vipLevel)
+		if lvl < 2 {
+			vipLevel = "2"
+		}
+		return downloadUrl, vipLevel, true
 	}
 	return downloadUrl, vipLevel, isVip
 }
