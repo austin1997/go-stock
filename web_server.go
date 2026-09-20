@@ -30,16 +30,21 @@ import (
 )
 
 const (
-	maxRPCBodyBytes    = 32 << 20
-	maxUploadBodyBytes = 64 << 20
-	maxWSMessageBytes  = 64 << 10
+	maxRPCBodyBytes            = 32 << 20
+	maxUploadBodyBytes         = 64 << 20
+	uploadMultipartMemoryBytes = 1 << 20
+	maxConcurrentUploads       = 4
+	maxWSMessageBytes          = 64 << 10
 )
 
 type webServer struct {
-	http      *http.Server
-	staticDir string
-	methods   map[string]reflect.Method
-	runtimes  *runtimeManager
+	http               *http.Server
+	staticDir          string
+	methods            map[string]reflect.Method
+	runtimes           *runtimeManager
+	uploadSlots        chan struct{}
+	uploadDir          func(uint) string
+	enforceUploadQuota func(string, int64) error
 }
 
 type rpcRequest struct {
@@ -60,9 +65,12 @@ type wsInbound struct {
 
 func newWebServer(staticDir string) *webServer {
 	s := &webServer{
-		staticDir: staticDir,
-		methods:   map[string]reflect.Method{},
-		runtimes:  newRuntimeManager(),
+		staticDir:          staticDir,
+		methods:            map[string]reflect.Method{},
+		runtimes:           newRuntimeManager(),
+		uploadSlots:        make(chan struct{}, maxConcurrentUploads),
+		uploadDir:          userUploadDir,
+		enforceUploadQuota: webauth.EnforceTmpQuota,
 	}
 	webauth.AfterUserDisabled = s.runtimes.stop
 	t := reflect.TypeOf((*App)(nil))
@@ -340,9 +348,20 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	select {
+	case s.uploadSlots <- struct{}{}:
+		defer func() { <-s.uploadSlots }()
+	default:
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "上传请求过多，请稍后重试"})
+		return
+	}
 	u := webauth.UserFromRequest(r)
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBodyBytes)
-	if err := r.ParseMultipartForm(maxUploadBodyBytes); err != nil {
+	err := r.ParseMultipartForm(uploadMultipartMemoryBytes)
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -352,8 +371,8 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	dir := userUploadDir(u.ID)
-	if err := webauth.EnforceTmpQuota(dir, hdr.Size); err != nil {
+	dir := s.uploadDir(u.ID)
+	if err := s.enforceUploadQuota(dir, hdr.Size); err != nil {
 		writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": err.Error()})
 		return
 	}
@@ -371,7 +390,7 @@ func (s *webServer) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := webauth.EnforceTmpQuota(dir, 0); err != nil {
+	if err := s.enforceUploadQuota(dir, 0); err != nil {
 		_ = os.Remove(dstPath)
 		writeJSON(w, http.StatusInsufficientStorage, map[string]any{"error": err.Error()})
 		return

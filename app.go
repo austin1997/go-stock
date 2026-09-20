@@ -3030,9 +3030,9 @@ func (a *App) GetTelegraphList(source string) *[]*models.Telegraph {
 
 func (a *App) ReFleshTelegraphList(source string) *[]*models.Telegraph {
 	//data.NewMarketNewsApi().GetNewTelegraph(30)
-	go data.NewMarketNewsApi().TelegraphList(30)
-	go data.NewMarketNewsApi().GetSinaNews(30)
-	go data.NewMarketNewsApi().TradingViewNews()
+	tenant.Go(func() { data.NewMarketNewsApi().TelegraphList(30) })
+	tenant.Go(func() { data.NewMarketNewsApi().GetSinaNews(30) })
+	tenant.Go(func() { data.NewMarketNewsApi().TradingViewNews() })
 	telegraphs := data.NewMarketNewsApi().GetTelegraphList(source)
 	return telegraphs
 }

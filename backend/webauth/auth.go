@@ -335,6 +335,9 @@ func BootstrapAdminFromEnv() (*User, error) {
 	if username == "" || password == "" {
 		return nil, nil
 	}
+	if err := ValidatePassword(password); err != nil {
+		return nil, err
+	}
 	u := &User{}
 	err := authDB.Where("username = ?", username).First(u).Error
 	if err == nil {
@@ -345,11 +348,13 @@ func BootstrapAdminFromEnv() (*User, error) {
 		if err := authDB.Model(u).Updates(map[string]any{
 			"password_hash": hash,
 			"is_admin":      true,
+			"disabled":      false,
 		}).Error; err != nil {
 			return nil, err
 		}
 		u.PasswordHash = hash
 		u.IsAdmin = true
+		u.Disabled = false
 		authDB.Where("user_id = ?", u.ID).Delete(&Session{})
 		events.Default.DisconnectUser(u.ID)
 		_ = MigrateLegacyIfNeeded(u.ID)

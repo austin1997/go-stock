@@ -222,7 +222,7 @@ func prepareUserWorkspace(userID uint) (*preparedWorkspace, error) {
 		return nil, err
 	}
 	if err := webauth.MigrateLegacyIfNeeded(userID); err != nil {
-		logger.SugaredLogger.Warnf("legacy workspace migrate: %v", err)
+		return nil, fmt.Errorf("migrate legacy workspace: %w", err)
 	}
 	if err := webauth.CopyDefaultSkills(userID); err != nil {
 		logger.SugaredLogger.Warnf("copy default skills: %v", err)

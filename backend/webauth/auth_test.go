@@ -2,6 +2,7 @@ package webauth
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -125,6 +126,115 @@ func TestBootstrapAdminUpdatesExistingPassword(t *testing.T) {
 	}
 	if _, err := Authenticate("alice", "newpass1"); err != nil {
 		t.Fatalf("new password should work: %v", err)
+	}
+}
+
+func TestBootstrapAdminReenablesExistingDisabledUser(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WEB_SETUP_SECRET", "setup-secret")
+	t.Setenv("WEB_ADMIN_USER", "")
+	t.Setenv("WEB_ADMIN_PASSWORD", "")
+	if err := Init(filepath.Join(dir, "auth.db")); err != nil {
+		t.Fatal(err)
+	}
+	u, err := Register("alice", "oldpass1", "setup-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := authDB.Model(u).Updates(map[string]any{
+		"is_admin": false,
+		"disabled": true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("WEB_ADMIN_USER", "alice")
+	t.Setenv("WEB_ADMIN_PASSWORD", "newpass1")
+	got, err := BootstrapAdminFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !got.IsAdmin || got.Disabled {
+		t.Fatalf("bootstrap should return enabled admin: %+v", got)
+	}
+	if _, err := Authenticate("alice", "newpass1"); err != nil {
+		t.Fatalf("bootstrapped admin should authenticate: %v", err)
+	}
+}
+
+func TestBootstrapAdminCreatesNewUser(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WEB_SETUP_SECRET", "")
+	t.Setenv("WEB_ADMIN_USER", "admin")
+	t.Setenv("WEB_ADMIN_PASSWORD", "secret1")
+	if err := Init(filepath.Join(dir, "auth.db")); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := BootstrapAdminFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u == nil || !u.IsAdmin || u.Disabled {
+		t.Fatalf("bootstrap should create enabled admin: %+v", u)
+	}
+	if _, err := Authenticate("admin", "secret1"); err != nil {
+		t.Fatalf("new bootstrap admin should authenticate: %v", err)
+	}
+	if UserCount() != 1 {
+		t.Fatalf("want one user, got %d", UserCount())
+	}
+}
+
+func TestBootstrapAdminRejectsInvalidPasswordWithoutMutatingExistingUser(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		password string
+	}{
+		{name: "short", password: strings.Repeat("x", MinPasswordLen-1)},
+		{name: "overlong", password: strings.Repeat("x", MaxPasswordLen+1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			t.Setenv("WEB_SETUP_SECRET", "setup-secret")
+			t.Setenv("WEB_ADMIN_USER", "")
+			t.Setenv("WEB_ADMIN_PASSWORD", "")
+			if err := Init(filepath.Join(dir, "auth.db")); err != nil {
+				t.Fatal(err)
+			}
+			u, err := Register("alice", "oldpass1", "setup-secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := authDB.Model(u).Updates(map[string]any{
+				"is_admin": false,
+				"disabled": true,
+			}).Error; err != nil {
+				t.Fatal(err)
+			}
+			before, err := GetUser(u.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			t.Setenv("WEB_ADMIN_USER", "alice")
+			t.Setenv("WEB_ADMIN_PASSWORD", tc.password)
+			got, err := BootstrapAdminFromEnv()
+			if err != ErrInvalidPassword || got != nil {
+				t.Fatalf("want invalid password and nil user, got %v %+v", err, got)
+			}
+
+			after, err := GetUser(u.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.PasswordHash != before.PasswordHash || after.IsAdmin != before.IsAdmin || after.Disabled != before.Disabled {
+				t.Fatalf("invalid bootstrap mutated user: before=%+v after=%+v", before, after)
+			}
+			if _, err := Authenticate("alice", "oldpass1"); err != ErrUserDisabled {
+				t.Fatalf("old password and disabled state should remain, got %v", err)
+			}
+		})
 	}
 }
 
