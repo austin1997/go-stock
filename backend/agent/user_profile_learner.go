@@ -28,6 +28,7 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 )
 
 // UserProfileLearner 用户画像学习器（Wails 绑定）
@@ -180,7 +181,7 @@ var (
 //   - LLM 失败直接放弃（保留旧画像），不回退规则模板——规则模板无法理解纠正语义。
 //   - 10 分钟防抖，避免连续反馈触发多次 LLM 调用。
 func (u *UserProfileLearner) RelearnAfterCorrection() {
-	go func() {
+	tenant.Go(func() {
 		correctionRelearnMu.Lock()
 		if time.Since(correctionRelearnAt) < 10*time.Minute {
 			correctionRelearnMu.Unlock()
@@ -218,7 +219,7 @@ func (u *UserProfileLearner) RelearnAfterCorrection() {
 		}
 		u.markFeedbackProcessed(snapshot.feedbackIDs)
 		logger.SugaredLogger.Infof("用户画像已根据最新纠正增量更新")
-	}()
+	})
 }
 
 // writeUserProfileAtomic 原子写入画像文件（tmp + rename），避免中断损坏。

@@ -21,6 +21,7 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/machineid"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 )
 
 // AgentFeedbackApi 反馈 API（Wails 绑定）
@@ -34,6 +35,12 @@ func NewAgentFeedbackApi() *AgentFeedbackApi {
 // CurrentUserKey 构建当前用户标识（无账号体系约定）。
 // 组合 machineID（机器维度）+ sessionID（会话维度），见方案文档 6.1。
 func CurrentUserKey(sessionID string) string {
+	if uid := tenant.UserID(); uid != 0 {
+		if sessionID == "" {
+			return fmt.Sprintf("web:%d", uid)
+		}
+		return fmt.Sprintf("web:%d:s:%s", uid, sessionID)
+	}
 	mid := machineid.GetMachineId()
 	if sessionID == "" {
 		return "m:" + mid

@@ -1,6 +1,7 @@
 package data
 
 import (
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 
 	"github.com/tidwall/gjson"
 )
@@ -101,7 +103,9 @@ func fetchLhbSeatList(stockCode, date, reportName, sortColumn string) ([]models.
 		"client":      "WEB",
 		"filter":      fmt.Sprintf(`(SECURITY_CODE="%s")(TRADE_DATE='%s')`, stockCode, date),
 	}
-	resp, err := SharedHTTPClient.SetTimeout(time.Duration(15)*time.Second).R().
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := SharedHTTPClient.R().SetContext(ctx).
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("Referer", "https://data.eastmoney.com/stock/tradedetail.html").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
@@ -229,6 +233,10 @@ type HotMoneySeatFile struct {
 
 const hotMoneySeatsFile = "data/hot_money_seats.json"
 
+func hotMoneySeatsPath() string {
+	return tenantDataFile("hot_money_seats.json")
+}
+
 // defaultHotMoneySeatsRemoteURL 默认远程名录源（上游仓库 dev 分支）
 const defaultHotMoneySeatsRemoteURL = "https://gh-proxy.com/https://github.com/ArvinLovegood/go-stock/blob/dev/data/hot_money_seats.json"
 
@@ -286,9 +294,9 @@ func builtinHotMoneySeatsSeed() HotMoneySeatFile {
 }
 
 var (
-	hotMoneySeatsOnce sync.Once
-	hotMoneySeatsMu   sync.RWMutex
-	hotMoneySeatIndex []hotMoneyIndexEntry
+	hotMoneySeatsMu           sync.RWMutex
+	hotMoneySeatIndexByTenant = map[uint][]hotMoneyIndexEntry{}
+	hotMoneySeatsLoaded       = map[uint]bool{}
 )
 
 // normalizeLhbBranch 席位名称归一化：剥离公司组织形式后缀，
@@ -329,39 +337,73 @@ func buildHotMoneySeatIndex(f *HotMoneySeatFile) []hotMoneyIndexEntry {
 	return idx
 }
 
+func storeHotMoneySeatIndex(idx []hotMoneyIndexEntry) {
+	id := tenant.UserID()
+	hotMoneySeatsMu.Lock()
+	defer hotMoneySeatsMu.Unlock()
+	storeHotMoneySeatIndexLocked(id, idx)
+}
+
+// storeHotMoneySeatIndexLocked requires hotMoneySeatsMu and invalidates only
+// summaries derived from this tenant's index (including desktop tenant 0).
+func storeHotMoneySeatIndexLocked(id uint, idx []hotMoneyIndexEntry) {
+	lhbDailySummaryMu.Lock()
+	defer lhbDailySummaryMu.Unlock()
+	hotMoneySeatIndexByTenant[id] = idx
+	hotMoneySeatsLoaded[id] = true
+	lhbDailySummaryGeneration[id]++
+	for key := range lhbDailySummaryCache {
+		if key.tenantID == id {
+			delete(lhbDailySummaryCache, key)
+		}
+	}
+}
+
 // loadHotMoneySeatIndex 懒加载游资名录索引：优先读外置 JSON（data/hot_money_seats.json），
 // 文件不存在时用内置种子生成一份，之后用户可直接编辑该文件（进程重启生效）。
 func loadHotMoneySeatIndex() []hotMoneyIndexEntry {
-	hotMoneySeatsOnce.Do(func() {
-		f, ok := readHotMoneySeatFile()
-		if !ok {
-			return
-		}
-		hotMoneySeatsMu.Lock()
-		hotMoneySeatIndex = buildHotMoneySeatIndex(&f)
-		hotMoneySeatsMu.Unlock()
-		// 配置了远程名录源则异步刷新一次（失败静默回退本地）
-		if f.RemoteURL != "" {
-			go RefreshHotMoneySeats(f.RemoteURL)
-		}
-	})
+	id := tenant.UserID()
 	hotMoneySeatsMu.RLock()
-	defer hotMoneySeatsMu.RUnlock()
-	return hotMoneySeatIndex
+	if hotMoneySeatsLoaded[id] {
+		idx := hotMoneySeatIndexByTenant[id]
+		hotMoneySeatsMu.RUnlock()
+		return idx
+	}
+	hotMoneySeatsMu.RUnlock()
+
+	hotMoneySeatsMu.Lock()
+	if hotMoneySeatsLoaded[id] {
+		idx := hotMoneySeatIndexByTenant[id]
+		hotMoneySeatsMu.Unlock()
+		return idx
+	}
+	f, ok := readHotMoneySeatFile()
+	var idx []hotMoneyIndexEntry
+	var remote string
+	if ok {
+		idx = buildHotMoneySeatIndex(&f)
+		remote = f.RemoteURL
+	}
+	storeHotMoneySeatIndexLocked(id, idx)
+	hotMoneySeatsMu.Unlock()
+	if remote != "" {
+		tenant.Go(func() { _ = RefreshHotMoneySeats(remote) })
+	}
+	return idx
 }
 
 // readHotMoneySeatFile 读取外置名录文件；文件不存在时用内置种子生成一份并返回。
 // ok=false 表示读取/解析均失败（调用方回退空索引，匹配退化为基础分类）。
 func readHotMoneySeatFile() (HotMoneySeatFile, bool) {
-	raw, err := os.ReadFile(hotMoneySeatsFile)
+	raw, err := os.ReadFile(hotMoneySeatsPath())
 	if err != nil {
 		if !os.IsNotExist(err) {
 			logger.SugaredLogger.Warnf("读取游资名录失败: %v", err)
 			return HotMoneySeatFile{}, false
 		}
 		// 文件不存在：直接落盘内置名录原始内容（保留 meta 扩展字段），方便用户后续自行维护
-		_ = os.MkdirAll(filepath.Dir(hotMoneySeatsFile), 0755)
-		if werr := os.WriteFile(hotMoneySeatsFile, builtinHotMoneySeatsJSON, 0644); werr != nil {
+		_ = os.MkdirAll(filepath.Dir(hotMoneySeatsPath()), 0755)
+		if werr := os.WriteFile(hotMoneySeatsPath(), builtinHotMoneySeatsJSON, 0644); werr != nil {
 			logger.SugaredLogger.Warnf("写入游资名录种子文件失败: %v", werr)
 		}
 		return builtinHotMoneySeatsSeed(), true
@@ -404,9 +446,7 @@ func SaveHotMoneySeats(f *HotMoneySeatFile) error {
 	if err := writeHotMoneySeatFile(f); err != nil {
 		return err
 	}
-	hotMoneySeatsMu.Lock()
-	hotMoneySeatIndex = buildHotMoneySeatIndex(f)
-	hotMoneySeatsMu.Unlock()
+	storeHotMoneySeatIndex(buildHotMoneySeatIndex(f))
 	logger.SugaredLogger.Infof("游资名录已保存: 游资数=%d", len(f.HotMoneyList))
 	return nil
 }
@@ -414,14 +454,12 @@ func SaveHotMoneySeats(f *HotMoneySeatFile) error {
 // ResetHotMoneySeats 恢复内置种子名录（覆盖外置文件并热更新内存索引）
 func ResetHotMoneySeats() error {
 	// 直接写内置原始内容（保留 meta 扩展字段）
-	_ = os.MkdirAll(filepath.Dir(hotMoneySeatsFile), 0755)
-	if err := os.WriteFile(hotMoneySeatsFile, builtinHotMoneySeatsJSON, 0644); err != nil {
+	_ = os.MkdirAll(filepath.Dir(hotMoneySeatsPath()), 0755)
+	if err := os.WriteFile(hotMoneySeatsPath(), builtinHotMoneySeatsJSON, 0644); err != nil {
 		return fmt.Errorf("写游资名录文件失败: %w", err)
 	}
 	seed := builtinHotMoneySeatsSeed()
-	hotMoneySeatsMu.Lock()
-	hotMoneySeatIndex = buildHotMoneySeatIndex(&seed)
-	hotMoneySeatsMu.Unlock()
+	storeHotMoneySeatIndex(buildHotMoneySeatIndex(&seed))
 	logger.SugaredLogger.Info("游资名录已重置为内置数据")
 	return nil
 }
@@ -432,8 +470,8 @@ func writeHotMoneySeatFile(f *HotMoneySeatFile) error {
 	if err != nil {
 		return fmt.Errorf("序列化游资名录失败: %w", err)
 	}
-	_ = os.MkdirAll(filepath.Dir(hotMoneySeatsFile), 0755)
-	if err := os.WriteFile(hotMoneySeatsFile, b, 0644); err != nil {
+	_ = os.MkdirAll(filepath.Dir(hotMoneySeatsPath()), 0755)
+	if err := os.WriteFile(hotMoneySeatsPath(), b, 0644); err != nil {
 		return fmt.Errorf("写游资名录文件失败: %w", err)
 	}
 	return nil
@@ -446,7 +484,9 @@ func RefreshHotMoneySeats(url string) error {
 	if rawURL == "" {
 		return fmt.Errorf("远程名录 URL 为空")
 	}
-	resp, err := SharedHTTPClient.SetTimeout(time.Duration(15)*time.Second).R().
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := SharedHTTPClient.R().SetContext(ctx).
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
 		Get(rawURL)
 	if err != nil {
@@ -464,9 +504,7 @@ func RefreshHotMoneySeats(url string) error {
 	if err := writeHotMoneySeatFile(&f); err != nil {
 		return err
 	}
-	hotMoneySeatsMu.Lock()
-	hotMoneySeatIndex = buildHotMoneySeatIndex(&f)
-	hotMoneySeatsMu.Unlock()
+	storeHotMoneySeatIndex(buildHotMoneySeatIndex(&f))
 	logger.SugaredLogger.Infof("游资名录已从远程刷新: version=%s 游资数=%d", f.Meta.Version, len(f.HotMoneyList))
 	return nil
 }
@@ -562,9 +600,15 @@ func (receiver LhbSeatApi) GetLhbSeatDetailToMarkdown(stockCode, date string) st
 // ---------- 当日游资/机构动向汇总 ----------
 
 // lhbDailySummaryCache 当日汇总缓存（龙虎榜收盘后数据不变，10 分钟缓存避免重复全量抓取）
+type lhbDailySummaryKey struct {
+	tenantID uint
+	date     string
+}
+
 var (
-	lhbDailySummaryMu    sync.Mutex
-	lhbDailySummaryCache = map[string]*models.LhbDailySummary{}
+	lhbDailySummaryMu         sync.Mutex
+	lhbDailySummaryCache      = map[lhbDailySummaryKey]*models.LhbDailySummary{}
+	lhbDailySummaryGeneration = map[uint]uint64{}
 )
 
 // lhbBillboardStock 当日上榜个股（从龙虎榜榜单接口取基础信息）
@@ -588,7 +632,9 @@ func fetchLhbBillboardStocks(date string) []lhbBillboardStock {
 		"client":      "WEB",
 		"filter":      fmt.Sprintf("(TRADE_DATE<='%s')(TRADE_DATE>='%s')", date, date),
 	}
-	resp, err := SharedHTTPClient.SetTimeout(time.Duration(15)*time.Second).R().
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	resp, err := SharedHTTPClient.R().SetContext(ctx).
 		SetHeader("Host", "datacenter-web.eastmoney.com").
 		SetHeader("Referer", "https://data.eastmoney.com/stock/tradedetail.html").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36").
@@ -623,11 +669,17 @@ func (receiver LhbSeatApi) GetLhbDailySummary(date string) *models.LhbDailySumma
 	if date == "" {
 		date = LatestLhbTradeDate()
 	}
+	key := lhbDailySummaryKey{tenantID: tenant.UserID(), date: date}
+	// Finish lazy initialization before capturing the index generation. Updates
+	// during HTTP work invalidate it, so old or mixed classifications cannot
+	// repopulate the cache after a save/reset/refresh.
+	loadHotMoneySeatIndex()
 	lhbDailySummaryMu.Lock()
-	if c, ok := lhbDailySummaryCache[date]; ok {
+	if c, ok := lhbDailySummaryCache[key]; ok {
 		lhbDailySummaryMu.Unlock()
 		return c
 	}
+	generation := lhbDailySummaryGeneration[key.tenantID]
 	lhbDailySummaryMu.Unlock()
 
 	summary := &models.LhbDailySummary{Date: date}
@@ -647,14 +699,14 @@ func (receiver LhbSeatApi) GetLhbDailySummary(date string) *models.LhbDailySumma
 	var wg sync.WaitGroup
 	for i, s := range stocks {
 		wg.Add(1)
-		go func(i int, s lhbBillboardStock) {
+		tenant.Go(func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			buys, _ := fetchLhbSeatList(s.StockCode, date, "RPT_BILLBOARD_DAILYDETAILSBUY", "BUY")
 			sells, _ := fetchLhbSeatList(s.StockCode, date, "RPT_BILLBOARD_DAILYDETAILSSELL", "SELL")
 			results[i] = stockSeats{stock: s, buys: buys, sells: sells}
-		}(i, s)
+		})
 	}
 	wg.Wait()
 
@@ -758,12 +810,20 @@ func (receiver LhbSeatApi) GetLhbDailySummary(date string) *models.LhbDailySumma
 
 	// 缓存 10 分钟（当日龙虎榜收盘后数据不再变化）
 	lhbDailySummaryMu.Lock()
-	lhbDailySummaryCache[date] = summary
+	if lhbDailySummaryGeneration[key.tenantID] != generation {
+		lhbDailySummaryMu.Unlock()
+		return summary
+	}
+	lhbDailySummaryCache[key] = summary
 	lhbDailySummaryMu.Unlock()
 	go func() {
 		time.Sleep(10 * time.Minute)
 		lhbDailySummaryMu.Lock()
-		delete(lhbDailySummaryCache, date)
+		// A reload or a concurrent fetch may have replaced this entry. An old
+		// expiry must never remove the replacement's independent cache lifetime.
+		if lhbDailySummaryCache[key] == summary {
+			delete(lhbDailySummaryCache, key)
+		}
 		lhbDailySummaryMu.Unlock()
 	}()
 	return summary

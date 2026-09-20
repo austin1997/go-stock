@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"go-stock/backend/db"
+	"go-stock/backend/tenant"
 )
 
 func TestLhbSeatDetail(t *testing.T) {
@@ -181,5 +182,46 @@ func TestHotMoneySeatsSaveReset(t *testing.T) {
 		}
 	} else {
 		_ = os.Remove(hotMoneySeatsFile)
+	}
+}
+
+func TestHotMoneySeatsTenantIsolation(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	custom := func(name, branch string) *HotMoneySeatFile {
+		f := builtinHotMoneySeatsSeed()
+		f.RemoteURL = ""
+		f.HotMoneyList = []HotMoneySeat{{
+			Name: name, Tier: "测试", Style: "测试", Risk: "低",
+			Seats: []HotMoneySeatBranch{{Branch: branch, Primary: true}},
+		}}
+		return &f
+	}
+
+	tenant.Bind(&tenant.Runtime{UserID: 11, Root: dir1})
+	if err := SaveHotMoneySeats(custom("甲游资", "甲证券甲路证券营业部")); err != nil {
+		t.Fatal(err)
+	}
+	tenant.Unbind()
+
+	tenant.Bind(&tenant.Runtime{UserID: 12, Root: dir2})
+	if err := SaveHotMoneySeats(custom("乙游资", "乙证券乙路证券营业部")); err != nil {
+		t.Fatal(err)
+	}
+	if hm := matchHotMoneySeat("乙证券股份有限公司乙路证券营业部"); hm != "乙游资" {
+		t.Fatalf("租户12 应命中乙游资, got %s", hm)
+	}
+	if hm := matchHotMoneySeat("甲证券股份有限公司甲路证券营业部"); hm != "" {
+		t.Fatalf("租户12 不应命中甲游资, got %s", hm)
+	}
+	tenant.Unbind()
+
+	tenant.Bind(&tenant.Runtime{UserID: 11, Root: dir1})
+	t.Cleanup(tenant.Unbind)
+	if hm := matchHotMoneySeat("甲证券股份有限公司甲路证券营业部"); hm != "甲游资" {
+		t.Fatalf("租户11 应命中甲游资, got %s", hm)
+	}
+	if hm := matchHotMoneySeat("乙证券股份有限公司乙路证券营业部"); hm != "" {
+		t.Fatalf("租户11 不应命中乙游资, got %s", hm)
 	}
 }

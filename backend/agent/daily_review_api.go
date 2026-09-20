@@ -7,12 +7,13 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"go-stock/backend/events"
 
 	"go-stock/backend/data"
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 )
 
 // DailyReviewApi 每日自动复盘 API
@@ -107,6 +108,16 @@ func (a *DailyReviewApi) GenerateDailyReview(ctx context.Context, date string, a
 	}
 	emitter.flush()
 
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			review.Status = "failed"
+			review.ErrorMessage = "已取消"
+			review.DurationMs = time.Since(start).Milliseconds()
+			db.Dao.Save(&review)
+			return nil, err
+		}
+	}
+
 	result := strings.TrimSpace(content.String())
 	generatedAt := time.Now()
 	if result == "" {
@@ -128,8 +139,10 @@ func (a *DailyReviewApi) GenerateDailyReview(ctx context.Context, date string, a
 	}
 
 	logger.SugaredLogger.Infof("每日复盘报告生成完成：%s（耗时 %dms）", date, review.DurationMs)
-	// 同步保存到 AI 分析报告，供研究中心查看
-	go data.NewDeepSeekOpenAi(ctx, aiConfigId).SaveAIResponseResult("每日复盘", "每日复盘", result, "", prompt)
+	// 异步保存到当前租户的 AI 分析报告，供研究中心查看。
+	tenant.GoContext(ctx, func() {
+		data.NewDeepSeekOpenAi(ctx, aiConfigId).SaveAIResponseResult("每日复盘", "每日复盘", result, "", prompt)
+	})
 	a.emitEvent(ctx, date, review)
 	return &review, nil
 }
@@ -342,7 +355,7 @@ func safeEventsEmit(ctx context.Context, event string, payload any) {
 				logger.SugaredLogger.Warnf("emit event %s panic recovered: %v", event, r)
 			}
 		}()
-		runtime.EventsEmit(ctx, event, payload)
+		events.Emit(ctx, event, payload)
 	}()
 }
 
@@ -443,13 +456,13 @@ func pushReportExternal(title, content string, pushFeishu, pushDingDing bool) {
 		if utf8.RuneCountInString(msg) > 3000 {
 			msg = string([]rune(msg)[:3000]) + "\n\n...(内容过长已截断，完整报告请查看软件)"
 		}
-		go data.NewFeishuAPI().SendToFeishu(title, msg)
+		tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, msg) })
 	}
 	if pushDingDing {
 		msg := content
 		if utf8.RuneCountInString(msg) > 3000 {
 			msg = string([]rune(msg)[:3000])
 		}
-		go data.NewDingDingAPI().SendToDingDing(title, msg)
+		tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, msg) })
 	}
 }

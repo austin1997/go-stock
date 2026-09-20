@@ -178,6 +178,12 @@ func (a *CronTaskApi) SearchTasks(keyword string) []models.CronTask {
 }
 
 func (a *CronTaskApi) ExecuteTask(ctx context.Context, task *models.CronTask) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	logger.SugaredLogger.Infof("开始执行定时任务：%s (ID: %d)", task.Name, task.ID)
 
 	now := time.Now()

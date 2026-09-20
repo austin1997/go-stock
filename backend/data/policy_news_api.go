@@ -113,8 +113,8 @@ var defaultKeyDepartments = []string{
 	"国家能源局",
 }
 
-// keyDepartmentsFile 重点部门外置文件（用户自定义，可编辑）
-const keyDepartmentsFile = "data/key_departments.json"
+// keyDepartmentsName 重点部门外置文件名（用户自定义，可编辑）
+const keyDepartmentsName = "key_departments.json"
 
 // keyDepartmentFile 外置文件结构
 type keyDepartmentFile struct {
@@ -227,7 +227,8 @@ func (p PolicyNewsApi) GetKeyDeptPolicyNews(limit int) *[]PolicyNewsItem {
 		limit = 50
 	}
 	policyNewsCacheMutex.RLock()
-	if cache, ok := policyNewsCache["keydept:all"]; ok && time.Since(policyNewsCacheAt["keydept:all"]) < policyNewsCacheTTL {
+	key := tenantCacheKey("keydept:all")
+	if cache, ok := policyNewsCache[key]; ok && time.Since(policyNewsCacheAt[key]) < policyNewsCacheTTL {
 		defer policyNewsCacheMutex.RUnlock()
 		return &cache
 	}
@@ -260,8 +261,8 @@ func (p PolicyNewsApi) GetKeyDeptPolicyNews(limit int) *[]PolicyNewsItem {
 	all = dedupeAndSortPolicyNews(all, limit)
 	savePolicyNews(all)
 	policyNewsCacheMutex.Lock()
-	policyNewsCache["keydept:all"] = all
-	policyNewsCacheAt["keydept:all"] = time.Now()
+	policyNewsCache[key] = all
+	policyNewsCacheAt[key] = time.Now()
 	policyNewsCacheMutex.Unlock()
 	return &all
 }
@@ -288,18 +289,21 @@ func (p PolicyNewsApi) SaveKeyDepartments(departments []string) string {
 	if len(cleaned) == 0 {
 		cleaned = append(cleaned, defaultKeyDepartments...)
 	}
-	if err := os.MkdirAll(filepath.Dir(keyDepartmentsFile), 0755); err != nil {
+	path := tenantDataFile(keyDepartmentsName)
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		logger.SugaredLogger.Errorf("保存重点部门失败(创建目录):%v", err)
 		return "保存失败：" + err.Error()
 	}
 	b, _ := json.MarshalIndent(keyDepartmentFile{Departments: cleaned}, "", "    ")
-	if err := os.WriteFile(keyDepartmentsFile, b, 0644); err != nil {
+	if err := os.WriteFile(path, b, 0644); err != nil {
 		logger.SugaredLogger.Errorf("保存重点部门失败:%v", err)
 		return "保存失败：" + err.Error()
 	}
 	// 清空聚合缓存，让新配置下次抓取立即生效
+	cacheKey := tenantCacheKey("keydept:all")
 	policyNewsCacheMutex.Lock()
-	delete(policyNewsCache, "keydept:all")
+	delete(policyNewsCache, cacheKey)
+	delete(policyNewsCacheAt, cacheKey)
 	policyNewsCacheMutex.Unlock()
 	logger.SugaredLogger.Infof("重点部门已更新（%d 个）", len(cleaned))
 	return ""
@@ -308,7 +312,7 @@ func (p PolicyNewsApi) SaveKeyDepartments(departments []string) string {
 // loadKeyDepartments 读取重点部门：优先外置 data/key_departments.json，
 // 文件不存在/为空/解析失败时回退默认列表（返回副本避免调用方污染默认值）。
 func loadKeyDepartments() []string {
-	if raw, err := os.ReadFile(keyDepartmentsFile); err == nil {
+	if raw, err := os.ReadFile(tenantDataFile(keyDepartmentsName)); err == nil {
 		var f keyDepartmentFile
 		if json.Unmarshal(raw, &f) == nil && len(f.Departments) > 0 {
 			return f.Departments
@@ -512,7 +516,7 @@ var (
 
 // fetchGovPage 抓取页面并按 charset（GB2312/GBK/UTF-8）解码为 goquery 文档
 func fetchGovPage(rawurl string) (*goquery.Document, error) {
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		SetHeader("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8").
 		SetHeader("Accept-Language", "zh-CN,zh;q=0.9").
@@ -873,7 +877,7 @@ type nfraResp struct {
 // itemId=914 为"新闻资讯"父栏目，返回各子栏目（时政要闻/监管动态/政策解读等）及各自最新文档。
 func fetchNfraPolicyNews(limit int) []PolicyNewsItem {
 	apiURL := "https://www.nfra.gov.cn/cbircweb/DocInfo/SelectItemAndDocByItemPId?itemId=914&pageSize=20"
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		SetHeader("Referer", "https://www.nfra.gov.cn/cn/view/pages/xinwenzixun/xinwenzixun.html").
 		Get(apiURL)
@@ -938,7 +942,7 @@ func fetchCsrcPolicyNews(limit int) []PolicyNewsItem {
 	var items []PolicyNewsItem
 	for _, ch := range channels {
 		apiURL := fmt.Sprintf("https://www.csrc.gov.cn/searchList/%s?_isAgg=true&_isJson=true&_pageSize=%d&_template=index&_rangeTimeGte=&_channelName=&page=1", ch.id, limit)
-		resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+		resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 			SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 			SetHeader("Referer", ch.referer).
 			Get(apiURL)
@@ -991,7 +995,7 @@ var (
 // 每条记录形如 "aT":"标题","aPd":"2026-07-31 14:33","aU":"{\"common\":\"/jbkzzx/...html\"}"，
 // 按 aT 锚点切分记录后逐条提取。
 func fetchNdcpaPolicyNews(limit int) []PolicyNewsItem {
-	resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+	resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		Get("https://www.ndcpa.gov.cn/jbkzzx/c100014/common/list.html")
 	if err != nil {
@@ -1075,7 +1079,7 @@ func fetchNeaPolicyNews(limit int) []PolicyNewsItem {
 		if err != nil {
 			continue
 		}
-		resp, err := SharedHTTPClient.SetTimeout(15*time.Second).R().
+		resp, err := CreateHTTPClientWithTimeout(15*time.Second).R().
 			SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 			SetHeader("Referer", ch.referer).
 			Get(ch.jsonURL)

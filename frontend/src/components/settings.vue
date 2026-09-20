@@ -23,6 +23,7 @@ import {HelpCircleFilledIcon, HelpIcon} from "tdesign-icons-vue-next";
 
 const message = useMessage()
 const router = useRouter()
+const isWeb = import.meta.env.VITE_WEB === 'true'
 
 const formRef = ref(null)
 const formValue = ref({
@@ -544,7 +545,7 @@ function deletePrompt(ID) {
                 </template>
               </n-tooltip>
             </n-form-item-gi>
-            <n-form-item-gi :span="10" label="浏览器安装路径：" path="browserPath">
+            <n-form-item-gi v-if="!isWeb" :span="10" label="浏览器安装路径：" path="browserPath">
               <n-input type="text" placeholder="浏览器安装路径" v-model:value="formValue.browserPath" clearable/>
             </n-form-item-gi>
            <n-form-item-gi :span="3" label="指数基金：" path="enableFund">

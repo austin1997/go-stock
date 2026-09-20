@@ -39,6 +39,7 @@ import (
 
 	"go-stock/backend/data"
 	"go-stock/backend/logger"
+	"go-stock/backend/tenant"
 )
 
 const (
@@ -103,12 +104,14 @@ type KnowledgeBaseSearchResult struct {
 }
 
 // kbMetaStore KB 元信息持久化（进程内单例 + JSON 文件）
+type kbMetaBucket struct {
+	path string
+	data map[string]*KnowledgeBaseInfo
+}
+
 var (
-	kbMetaOnce sync.Once
-	kbMetaMu   sync.RWMutex
-	kbMetaPath string
-	// kbMetaInMemory 内存中的 KB 元信息缓存（启动时从 JSON 加载）
-	kbMetaInMemory map[string]*KnowledgeBaseInfo
+	kbMetaMu    sync.RWMutex
+	kbMetaByKey = map[string]*kbMetaBucket{}
 )
 
 // KBVectorizingStatus 知识库向量化进度状态（内存态，不持久化）
@@ -137,7 +140,10 @@ var (
 	kbEmbedGlobalSem = make(chan struct{}, 5)
 )
 
-// setKBVectorizing 设置 KB 的向量化状态（进行中）
+func vecKey(kbName string) string {
+	return scopedName(kbName)
+}
+
 func setKBVectorizing(kbName string, totalFiles int) *KBVectorizingStatus {
 	kbVectorizingMu.Lock()
 	defer kbVectorizingMu.Unlock()
@@ -146,7 +152,7 @@ func setKBVectorizing(kbName string, totalFiles int) *KBVectorizingStatus {
 		TotalFiles:    totalFiles,
 		StartedAt:     time.Now(),
 	}
-	kbVectorizingStatuses[kbName] = st
+	kbVectorizingStatuses[vecKey(kbName)] = st
 	return st
 }
 
@@ -154,7 +160,7 @@ func setKBVectorizing(kbName string, totalFiles int) *KBVectorizingStatus {
 func updateKBVectorizingProgress(kbName string, processed, success, failed, chunks int) {
 	kbVectorizingMu.Lock()
 	defer kbVectorizingMu.Unlock()
-	if st, ok := kbVectorizingStatuses[kbName]; ok {
+	if st, ok := kbVectorizingStatuses[vecKey(kbName)]; ok {
 		st.ProcessedFiles = processed
 		st.SuccessCount = success
 		st.FailedCount = failed
@@ -166,11 +172,11 @@ func updateKBVectorizingProgress(kbName string, processed, success, failed, chun
 func finishKBVectorizing(kbName string, results []KBFileImportResult, errMsg string) {
 	kbVectorizingMu.Lock()
 	defer kbVectorizingMu.Unlock()
-	st, ok := kbVectorizingStatuses[kbName]
+	key := vecKey(kbName)
+	st, ok := kbVectorizingStatuses[key]
 	if !ok {
-		// 状态不存在时也创建一份已完成记录，便于前端读取结果
 		st = &KBVectorizingStatus{StartedAt: time.Now()}
-		kbVectorizingStatuses[kbName] = st
+		kbVectorizingStatuses[key] = st
 	}
 	st.IsVectorizing = false
 	now := time.Now()
@@ -197,7 +203,7 @@ func finishKBVectorizing(kbName string, results []KBFileImportResult, errMsg str
 func GetKBVectorizingStatus(kbName string) *KBVectorizingStatus {
 	kbVectorizingMu.RLock()
 	defer kbVectorizingMu.RUnlock()
-	if st, ok := kbVectorizingStatuses[kbName]; ok {
+	if st, ok := kbVectorizingStatuses[vecKey(kbName)]; ok {
 		// 返回副本，避免外部修改
 		cp := *st
 		if st.Results != nil {
@@ -212,13 +218,18 @@ func GetKBVectorizingStatus(kbName string) *KBVectorizingStatus {
 func GetAllKBVectorizingStatuses() map[string]*KBVectorizingStatus {
 	kbVectorizingMu.RLock()
 	defer kbVectorizingMu.RUnlock()
-	out := make(map[string]*KBVectorizingStatus, len(kbVectorizingStatuses))
+	prefix := memoryTenantKey() + "\x1f"
+	out := make(map[string]*KBVectorizingStatus)
 	for k, v := range kbVectorizingStatuses {
+		name, ok := strings.CutPrefix(k, prefix)
+		if !ok {
+			continue
+		}
 		cp := *v
 		if v.Results != nil {
 			cp.Results = append([]KBFileImportResult(nil), v.Results...)
 		}
-		out[k] = &cp
+		out[name] = &cp
 	}
 	return out
 }
@@ -226,48 +237,64 @@ func GetAllKBVectorizingStatuses() map[string]*KBVectorizingStatus {
 // initKBMeta 懒加载 KB 元信息存储（读取 JSON 文件到内存）
 // 幂等，多次调用只初始化一次。
 func initKBMeta() {
-	kbMetaOnce.Do(func() {
-		rootDir := deepAgentRootDir()
-		kbMetaPath = filepath.Join(rootDir, memoryDirName, vectorStoreDirName, kbMetaFileName)
-		kbMetaInMemory = make(map[string]*KnowledgeBaseInfo)
-
-		// 确保目录存在
-		if err := os.MkdirAll(filepath.Dir(kbMetaPath), 0o755); err != nil {
-			logger.SugaredLogger.Warnf("initKBMeta: 创建元信息目录失败: %v (path=%s)", err, filepath.Dir(kbMetaPath))
-			return
+	key := memoryTenantKey()
+	kbMetaMu.RLock()
+	_, ok := kbMetaByKey[key]
+	kbMetaMu.RUnlock()
+	if ok {
+		return
+	}
+	kbMetaMu.Lock()
+	defer kbMetaMu.Unlock()
+	if _, ok := kbMetaByKey[key]; ok {
+		return
+	}
+	rootDir := deepAgentRootDir()
+	b := &kbMetaBucket{
+		path: filepath.Join(rootDir, memoryDirName, vectorStoreDirName, kbMetaFileName),
+		data: make(map[string]*KnowledgeBaseInfo),
+	}
+	if err := os.MkdirAll(filepath.Dir(b.path), 0o755); err != nil {
+		logger.SugaredLogger.Warnf("initKBMeta: 创建元信息目录失败: %v (path=%s)", err, filepath.Dir(b.path))
+		kbMetaByKey[key] = b
+		return
+	}
+	raw, err := os.ReadFile(b.path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			logger.SugaredLogger.Warnf("initKBMeta: 读取元信息文件失败: %v (path=%s)", err, b.path)
 		}
-
-		// 读取已有元信息
-		data, err := os.ReadFile(kbMetaPath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				logger.SugaredLogger.Warnf("initKBMeta: 读取元信息文件失败: %v (path=%s)", err, kbMetaPath)
-			}
-			return
-		}
-		if err := json.Unmarshal(data, &kbMetaInMemory); err != nil {
-			logger.SugaredLogger.Warnf("initKBMeta: 解析元信息 JSON 失败: %v (path=%s)", err, kbMetaPath)
-			kbMetaInMemory = make(map[string]*KnowledgeBaseInfo)
-		}
-	})
+		kbMetaByKey[key] = b
+		return
+	}
+	if err := json.Unmarshal(raw, &b.data); err != nil {
+		logger.SugaredLogger.Warnf("initKBMeta: 解析元信息 JSON 失败: %v (path=%s)", err, b.path)
+		b.data = make(map[string]*KnowledgeBaseInfo)
+	}
+	kbMetaByKey[key] = b
 }
 
-// persistKBMeta 将内存中的 KB 元信息写入磁盘
-// 调用方需自行持有 kbMetaMu 写锁
+func kbMeta() map[string]*KnowledgeBaseInfo {
+	if b := kbMetaByKey[memoryTenantKey()]; b != nil && b.data != nil {
+		return b.data
+	}
+	return map[string]*KnowledgeBaseInfo{}
+}
+
 func persistKBMeta() error {
-	if kbMetaPath == "" {
+	b := kbMetaByKey[memoryTenantKey()]
+	if b == nil || b.path == "" {
 		return fmt.Errorf("KB 元信息路径未初始化")
 	}
-	data, err := json.MarshalIndent(kbMetaInMemory, "", "  ")
+	data, err := json.MarshalIndent(b.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化 KB 元信息失败: %w", err)
 	}
-	// 先写临时文件再原子替换，避免写入中断导致文件损坏
-	tmpPath := kbMetaPath + ".tmp"
+	tmpPath := b.path + ".tmp"
 	if err := os.WriteFile(tmpPath, data, 0o644); err != nil {
 		return fmt.Errorf("写入 KB 元信息临时文件失败: %w", err)
 	}
-	return os.Rename(tmpPath, kbMetaPath)
+	return os.Rename(tmpPath, b.path)
 }
 
 // kbCollectionName 将用户可读的 KB 名转换为 chromem collection 名（加前缀避免冲突）
@@ -279,15 +306,12 @@ func kbCollectionName(name string) string {
 // 注意：必须先调用 initLongTermMemoryStore() 确保数据库已初始化。
 // 返回的 DB 可用于创建/获取/删除任意 collection。
 func getKBDB() *chromem.DB {
-	initLongTermMemoryStore()
-	return longTermMemoryDB
+	return initLongTermMemoryStore().db
 }
 
-// getKBEmbedFunc 获取全局默认 embedding 函数（与长期记忆共用）。
-// 用于未指定 KB 级配置时的兜底。
 func getKBEmbedFunc() chromem.EmbeddingFunc {
-	initLongTermMemoryStore()
-	if longTermMemoryErr != nil {
+	h := initLongTermMemoryStore()
+	if h.err != nil {
 		return nil
 	}
 	embedFunc, _, err := buildEmbeddingFunc()
@@ -319,7 +343,7 @@ func getKBEmbedFuncFor(info *KnowledgeBaseInfo) chromem.EmbeddingFunc {
 		return wrapEmbedFuncWithCache(getKBEmbedFunc(), "default")
 	}
 	logger.SugaredLogger.Debugf("getKBEmbedFuncFor: KB %q 使用 %s", info.Name, summary)
-	// 用 AIConfigID + EmbeddingModel 作为缓存 key 前缀，区分不同模型（详见 embedding_cache.go）
+	// 用 AIConfigID + EmbeddingModel 作为缓存 key 前缀，wrapEmbedFuncWithCache 还会加上租户 ID
 	cacheKey := fmt.Sprintf("aic%d:%s", info.AIConfigID, info.EmbeddingModel)
 	return wrapEmbedFuncWithCache(embedFunc, cacheKey)
 }
@@ -366,7 +390,7 @@ func CreateKnowledgeBase(name, description string, aiConfigID uint, embeddingMod
 	initKBMeta()
 	db := getKBDB()
 	if db == nil {
-		return nil, fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+		return nil, fmt.Errorf("向量库未初始化: %v", initLongTermMemoryStore().err)
 	}
 
 	embeddingModel = strings.TrimSpace(embeddingModel)
@@ -379,7 +403,7 @@ func CreateKnowledgeBase(name, description string, aiConfigID uint, embeddingMod
 	kbMetaMu.Lock()
 	defer kbMetaMu.Unlock()
 
-	if _, exists := kbMetaInMemory[name]; exists {
+	if _, exists := kbMeta()[name]; exists {
 		return nil, fmt.Errorf("知识库 %q 已存在", name)
 	}
 
@@ -404,7 +428,7 @@ func CreateKnowledgeBase(name, description string, aiConfigID uint, embeddingMod
 		AIConfigName:   resolveAIConfigName(aiConfigID),
 		EmbeddingModel: embeddingModel,
 	}
-	kbMetaInMemory[name] = info
+	kbMeta()[name] = info
 
 	if err := persistKBMeta(); err != nil {
 		logger.SugaredLogger.Warnf("CreateKnowledgeBase: 持久化元信息失败: %v", err)
@@ -421,8 +445,8 @@ func ListKnowledgeBases() []*KnowledgeBaseInfo {
 	kbMetaMu.RLock()
 	defer kbMetaMu.RUnlock()
 
-	result := make([]*KnowledgeBaseInfo, 0, len(kbMetaInMemory))
-	for _, info := range kbMetaInMemory {
+	result := make([]*KnowledgeBaseInfo, 0, len(kbMeta()))
+	for _, info := range kbMeta() {
 		// 复制一份再修改，避免污染缓存；列表接口不返回 Documents 索引
 		infoCopy := *info
 		infoCopy.Documents = nil
@@ -461,7 +485,7 @@ func GetKnowledgeBase(name string) *KnowledgeBaseInfo {
 	initKBMeta()
 	kbMetaMu.RLock()
 	defer kbMetaMu.RUnlock()
-	if info, ok := kbMetaInMemory[name]; ok {
+	if info, ok := kbMeta()[name]; ok {
 		infoCopy := *info
 		infoCopy.Documents = nil
 		infoCopy.AIConfigName = resolveAIConfigName(info.AIConfigID)
@@ -488,13 +512,13 @@ func DeleteKnowledgeBase(name string) error {
 	initKBMeta()
 	db := getKBDB()
 	if db == nil {
-		return fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+		return fmt.Errorf("向量库未初始化: %v", initLongTermMemoryStore().err)
 	}
 
 	kbMetaMu.Lock()
 	defer kbMetaMu.Unlock()
 
-	if _, exists := kbMetaInMemory[name]; !exists {
+	if _, exists := kbMeta()[name]; !exists {
 		return fmt.Errorf("知识库 %q 不存在", name)
 	}
 
@@ -502,7 +526,7 @@ func DeleteKnowledgeBase(name string) error {
 		return fmt.Errorf("删除 collection 失败: %w", err)
 	}
 
-	delete(kbMetaInMemory, name)
+	delete(kbMeta(), name)
 	if err := persistKBMeta(); err != nil {
 		logger.SugaredLogger.Warnf("DeleteKnowledgeBase: 持久化元信息失败: %v", err)
 	}
@@ -536,11 +560,11 @@ func AddDocumentToKB(kbName, content, source string, extraMetadata map[string]st
 	initKBMeta()
 	db := getKBDB()
 	if db == nil {
-		return nil, fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+		return nil, fmt.Errorf("向量库未初始化: %v", initLongTermMemoryStore().err)
 	}
 
 	kbMetaMu.RLock()
-	kbInfo, exists := kbMetaInMemory[kbName]
+	kbInfo, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("知识库 %q 不存在", kbName)
@@ -633,7 +657,7 @@ func AddDocumentToKB(kbName, content, source string, extraMetadata map[string]st
 
 	// 更新元信息：追加文档索引、刷新文档数与时间
 	kbMetaMu.Lock()
-	if info, ok := kbMetaInMemory[kbName]; ok {
+	if info, ok := kbMeta()[kbName]; ok {
 		info.Documents = append(info.Documents, docIndexes...)
 		info.UpdatedAt = now
 		info.DocumentCount = coll.Count()
@@ -664,6 +688,11 @@ func AddFileToKB(kbName, filePath string) ([]string, error) {
 	if kbName == "" || filePath == "" {
 		return nil, fmt.Errorf("知识库名称与文件路径均不能为空")
 	}
+	resolved, err := restrictWebUploadPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	filePath = resolved
 
 	info, err := os.Stat(filePath)
 	if err != nil {
@@ -760,7 +789,8 @@ func AddFilesToKB(kbName string, filePaths []string) (*KBBatchImportSummary, err
 			continue
 		}
 		fileWg.Add(1)
-		go func(filePath string) {
+		filePath := fp
+		tenant.Go(func() {
 			defer fileWg.Done()
 			fileSem <- struct{}{}
 			defer func() { <-fileSem }()
@@ -795,7 +825,7 @@ func AddFilesToKB(kbName string, filePaths []string) (*KBBatchImportSummary, err
 
 			logger.SugaredLogger.Infof("批量导入进度: kb=%q file=%s success=%v chunks=%d (%d/%d)",
 				kbName, result.FileName, result.Success, result.ChunkCount, processed, summary.TotalFiles)
-		}(fp)
+		})
 	}
 	fileWg.Wait()
 
@@ -825,7 +855,7 @@ func StartBatchImport(kbName string, filePaths []string) error {
 	// 校验 KB 存在
 	initKBMeta()
 	kbMetaMu.RLock()
-	_, exists := kbMetaInMemory[kbName]
+	_, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists {
 		return fmt.Errorf("知识库 %q 不存在", kbName)
@@ -838,7 +868,7 @@ func StartBatchImport(kbName string, filePaths []string) error {
 	// 在 goroutine 启动前就设置进行中状态，确保 StartBatchImport 返回后前端轮询立即可见
 	setKBVectorizing(kbName, len(filePaths))
 
-	go func() {
+	tenant.Go(func() {
 		defer func() {
 			if r := recover(); r != nil {
 				logger.SugaredLogger.Errorf("StartBatchImport panic: kb=%q err=%v", kbName, r)
@@ -850,7 +880,7 @@ func StartBatchImport(kbName string, filePaths []string) error {
 			finishKBVectorizing(kbName, nil, err.Error())
 			logger.SugaredLogger.Warnf("StartBatchImport 失败: kb=%q err=%v", kbName, err)
 		}
-	}()
+	})
 
 	logger.SugaredLogger.Infof("已启动后台批量导入: kb=%q files=%d", kbName, len(filePaths))
 	return nil
@@ -884,11 +914,11 @@ func SearchKnowledgeBase(ctx context.Context, kbName, query string, topK int) ([
 	initKBMeta()
 	db := getKBDB()
 	if db == nil {
-		return nil, fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+		return nil, fmt.Errorf("向量库未初始化: %v", initLongTermMemoryStore().err)
 	}
 
 	kbMetaMu.RLock()
-	kbInfo, exists := kbMetaInMemory[kbName]
+	kbInfo, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists {
 		return nil, fmt.Errorf("知识库 %q 不存在", kbName)
@@ -954,11 +984,11 @@ func ListDocumentsInKB(kbName string) ([]KnowledgeBaseDocument, error) {
 	initKBMeta()
 	db := getKBDB()
 	if db == nil {
-		return nil, fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+		return nil, fmt.Errorf("向量库未初始化: %v", initLongTermMemoryStore().err)
 	}
 
 	kbMetaMu.RLock()
-	info, exists := kbMetaInMemory[kbName]
+	info, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists || info == nil {
 		return nil, fmt.Errorf("知识库 %q 不存在", kbName)
@@ -1033,11 +1063,11 @@ func ListDocumentsInKBPaged(kbName string, page, pageSize int) (*KBDocumentsPage
 	initKBMeta()
 	db := getKBDB()
 	if db == nil {
-		return nil, fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+		return nil, fmt.Errorf("向量库未初始化: %v", initLongTermMemoryStore().err)
 	}
 
 	kbMetaMu.RLock()
-	info, exists := kbMetaInMemory[kbName]
+	info, exists := kbMeta()[kbName]
 	if !exists || info == nil {
 		kbMetaMu.RUnlock()
 		return nil, fmt.Errorf("知识库 %q 不存在", kbName)
@@ -1104,11 +1134,11 @@ func DeleteDocumentFromKB(kbName, docID string) error {
 	initKBMeta()
 	db := getKBDB()
 	if db == nil {
-		return fmt.Errorf("向量库未初始化: %v", longTermMemoryErr)
+		return fmt.Errorf("向量库未初始化: %v", initLongTermMemoryStore().err)
 	}
 
 	kbMetaMu.RLock()
-	info, exists := kbMetaInMemory[kbName]
+	info, exists := kbMeta()[kbName]
 	kbMetaMu.RUnlock()
 	if !exists {
 		return fmt.Errorf("知识库 %q 不存在", kbName)
@@ -1127,7 +1157,7 @@ func DeleteDocumentFromKB(kbName, docID string) error {
 
 	// 同步更新元信息文档索引
 	kbMetaMu.Lock()
-	if info, ok := kbMetaInMemory[kbName]; ok {
+	if info, ok := kbMeta()[kbName]; ok {
 		filtered := make([]KBDocumentIndex, 0, len(info.Documents))
 		for _, d := range info.Documents {
 			if d.DocID != docID {

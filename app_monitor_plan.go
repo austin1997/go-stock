@@ -7,13 +7,14 @@ import (
 	"time"
 
 	"github.com/duke-git/lancet/v2/convertor"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"go-stock/backend/agent/tools"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
+	"go-stock/backend/events"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
 )
 
 // 通知渠道常量
@@ -181,25 +182,25 @@ func (a *App) sendPlanNotification(channels []string, title, content, plainConte
 	for _, ch := range channels {
 		switch ch {
 		case NotifyChannelApp:
-			go data.NewAlertWindowsApi("go-stock操作计划预警", title, content, "").SendNotification()
-			go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+			tenant.Go(func() { data.NewAlertWindowsApi("go-stock操作计划预警", title, content, "").SendNotification() })
+			go events.Emit(a.ctx, "newsPush", map[string]any{
 				"time":    title,
 				"isRed":   true,
 				"source":  "go-stock",
 				"content": plainContent,
 			})
 		case NotifyChannelFeishu:
-			go data.NewFeishuAPI().SendToFeishu(title, content)
+			tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
 		case NotifyChannelDingDing:
-			go data.NewDingDingAPI().SendToDingDing(title, content)
+			tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
 		}
 	}
 	if useAll {
 		// 未配置渠道时，全部发送
-		go data.NewAlertWindowsApi("go-stock操作计划预警", title, content, "").SendNotification()
-		go data.NewFeishuAPI().SendToFeishu(title, content)
-		go data.NewDingDingAPI().SendToDingDing(title, content)
-		go runtime.EventsEmit(a.ctx, "newsPush", map[string]any{
+		tenant.Go(func() { data.NewAlertWindowsApi("go-stock操作计划预警", title, content, "").SendNotification() })
+		tenant.Go(func() { data.NewFeishuAPI().SendToFeishu(title, content) })
+		tenant.Go(func() { data.NewDingDingAPI().SendToDingDing(title, content) })
+		go events.Emit(a.ctx, "newsPush", map[string]any{
 			"time":    title,
 			"isRed":   true,
 			"source":  "go-stock",

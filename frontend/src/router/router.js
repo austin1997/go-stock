@@ -1,4 +1,4 @@
-import {createMemoryHistory, createRouter, createWebHashHistory, createWebHistory} from 'vue-router'
+import {createRouter, createWebHashHistory} from 'vue-router'
 
 import stockView from '../components/stock.vue'
 import settingsView from '../components/settings.vue'
@@ -15,6 +15,9 @@ import userProfile from "../components/user-profile.vue"
 import homeView from "../components/Home.vue";
 import dailyReview from "../components/DailyReview.vue"
 import morningStrategy from "../components/MorningStrategy.vue"
+import webLogin from "../components/web-login.vue"
+import webUsers from "../components/web-users.vue"
+import {fetchMe, isWebMode} from "../platform/auth.js"
 
 const routes = [
     { path: '/', redirect: '/home'},
@@ -33,13 +36,49 @@ const routes = [
     { path: '/user-profile', component: userProfile,name: 'userProfile' },
     { path: '/daily-review', component: dailyReview,name: 'dailyReview' },
     { path: '/morning-strategy', component: morningStrategy,name: 'morningStrategy' },
-
+    { path: '/login', component: webLogin, name: 'login' },
+    { path: '/users', component: webUsers, name: 'users' },
 ]
 
 const router = createRouter({
-    //history: createWebHistory(),
     history: createWebHashHistory(),
     routes,
+})
+
+let cachedUser = null
+
+export function getCachedUser() {
+    return cachedUser
+}
+
+export function setCachedUser(user) {
+    cachedUser = user
+}
+
+router.beforeEach(async (to) => {
+    if (!isWebMode()) {
+        if (to.name === 'login' || to.name === 'users') {
+            return { name: 'home' }
+        }
+        return true
+    }
+    if (to.name === 'login') {
+        const me = await fetchMe().catch(() => null)
+        cachedUser = me
+        if (me) {
+            return { path: '/' }
+        }
+        return true
+    }
+    const me = await fetchMe().catch(() => null)
+    cachedUser = me
+    if (!me) {
+        return { name: 'login', query: { redirect: to.fullPath } }
+    }
+    if (to.name === 'users' && !me.isAdmin) {
+        return { name: 'home' }
+    }
+    return true
 })
 
 export default router

@@ -107,11 +107,11 @@ func (t *longTermMemoryTool) InvokableRun(ctx context.Context, argumentsInJSON s
 	recalls := SearchRelevant(ctx, query, topK, CurrentUserKey(""))
 	if len(recalls) == 0 {
 		// 区分"向量库未就绪"与"无匹配结果"两种情况，便于 Agent 决策
-		initLongTermMemoryStore()
-		if longTermMemoryColl == nil {
-			return fmt.Sprintf("长期记忆向量库未就绪（原因: %v），暂无法检索历史经验。", longTermMemoryErr), nil
+		h := initLongTermMemoryStore()
+		if h.coll == nil {
+			return fmt.Sprintf("长期记忆向量库未就绪（原因: %v），暂无法检索历史经验。", h.err), nil
 		}
-		if longTermMemoryColl.Count() == 0 {
+		if h.coll.Count() == 0 {
 			return "历史经验库为空，暂无可检索的记录。", nil
 		}
 		return fmt.Sprintf("未找到与 %q 相关的历史经验。", query), nil

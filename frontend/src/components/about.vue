@@ -26,6 +26,7 @@ const theme = computed(() => darkTheme.value ? 'dark' : 'light')
 const manualScrollRef = ref(null)
 const catalogList = ref([])
 const iframeLoading = ref(true)
+const isWeb = import.meta.env.VITE_WEB === 'true'
 
 const buildCatalogTree = (headings) => {
   if (!headings.length) return []
@@ -246,7 +247,7 @@ EventsOn("updateNeedAdmin", (msg) => {
               {{ expired ? 'VIP 已到期：' : 'VIP 到期时间：' }}{{ vipEndTime }}
             </n-gradient-text>
             <n-flex justify="center" :size="12" class="hero-actions">
-              <n-button size="small" @click="CheckUpdate(1)" type="info" tertiary round>
+              <n-button v-if="!isWeb" size="small" @click="CheckUpdate(1)" type="info" tertiary round>
                 <template #icon>🔄</template>
                 检查更新
               </n-button>

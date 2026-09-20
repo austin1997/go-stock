@@ -1,6 +1,8 @@
 package data
 
 import (
+	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -8,6 +10,9 @@ import (
 	"time"
 
 	"github.com/go-resty/resty/v2"
+
+	"go-stock/backend/tenant"
+	"go-stock/backend/webmode"
 )
 
 var (
@@ -17,7 +22,71 @@ var (
 	httpConfigMutex     sync.RWMutex
 	currentProxyEnabled bool
 	currentProxyURL     string
+	currentTimeout      = 300 * time.Second
 )
+
+type timeoutRoundTripper struct {
+	base http.RoundTripper
+}
+
+func requestTimeout() time.Duration {
+	if d := tenant.HTTPTimeout(); d > 0 {
+		return d
+	}
+	httpConfigMutex.RLock()
+	defer httpConfigMutex.RUnlock()
+	if currentTimeout > 0 {
+		return currentTimeout
+	}
+	return 300 * time.Second
+}
+
+type cancelOnCloseBody struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnCloseBody) Read(p []byte) (int, error) {
+	n, err := b.ReadCloser.Read(p)
+	if err != nil {
+		b.cancel()
+	}
+	return n, err
+}
+
+func (b *cancelOnCloseBody) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
+func (t *timeoutRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req == nil {
+		return t.base.RoundTrip(req)
+	}
+	d := requestTimeout()
+	if d <= 0 {
+		return t.base.RoundTrip(req)
+	}
+	parent := req.Context()
+	if deadline, ok := parent.Deadline(); ok {
+		if rem := time.Until(deadline); rem > 0 && rem < d {
+			d = rem
+		}
+	}
+	ctx, cancel := context.WithTimeout(parent, d)
+	resp, err := t.base.RoundTrip(req.WithContext(ctx))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if resp.Body == nil || resp.Body == http.NoBody {
+		cancel()
+		return resp, nil
+	}
+	resp.Body = &cancelOnCloseBody{ReadCloser: resp.Body, cancel: cancel}
+	return resp, nil
+}
 
 func init() {
 	sharedTransport = &http.Transport{
@@ -33,17 +102,29 @@ func init() {
 		ResponseHeaderTimeout: 120 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
-		Proxy:                 nil,
+		Proxy:                 resolveHTTPProxy,
 	}
 
 	sharedHTTPClient = &http.Client{
-		Transport: sharedTransport,
-		Timeout:   300 * time.Second,
+		Transport: &timeoutRoundTripper{base: sharedTransport},
+		Timeout:   0,
 	}
 
 	SharedHTTPClient = resty.NewWithClient(sharedHTTPClient).
 		SetRetryCount(0).
-		SetTimeout(300 * time.Second)
+		SetTimeout(0)
+}
+
+func resolveHTTPProxy(req *http.Request) (*url.URL, error) {
+	if rt := tenant.Current(); rt != nil && rt.ProxyOn && rt.ProxyURL != "" {
+		return parseProxyURL(rt.ProxyURL), nil
+	}
+	httpConfigMutex.RLock()
+	defer httpConfigMutex.RUnlock()
+	if currentProxyEnabled && currentProxyURL != "" {
+		return parseProxyURL(currentProxyURL), nil
+	}
+	return nil, nil
 }
 
 func UpdateHTTPClientProxy(proxyURL string) {
@@ -54,7 +135,6 @@ func UpdateHTTPClientProxy(proxyURL string) {
 		return
 	}
 
-	sharedTransport.Proxy = http.ProxyURL(parseProxyURL(proxyURL))
 	currentProxyURL = proxyURL
 	currentProxyEnabled = true
 }
@@ -63,14 +143,23 @@ func DisableHTTPClientProxy() {
 	httpConfigMutex.Lock()
 	defer httpConfigMutex.Unlock()
 
-	sharedTransport.Proxy = nil
 	currentProxyEnabled = false
 	currentProxyURL = ""
 }
 
 func UpdateHTTPClientTimeout(timeout time.Duration) {
-	sharedHTTPClient.Timeout = timeout
-	SharedHTTPClient.SetTimeout(timeout)
+	if timeout <= 0 {
+		timeout = 300 * time.Second
+	}
+	if webmode.Enabled() {
+		tenant.SetHTTPTimeout(timeout)
+		return
+	}
+	httpConfigMutex.Lock()
+	currentTimeout = timeout
+	httpConfigMutex.Unlock()
+	// timeoutRoundTripper reads currentTimeout under the same lock.
+	// Keep http.Client immutable even while desktop requests are in flight.
 }
 
 func parseProxyURL(proxyURL string) *url.URL {
@@ -86,7 +175,15 @@ func ConfigureFromSettings(config *SettingConfig) {
 		return
 	}
 
-	if config.HttpProxyEnabled && config.HttpProxy != "" {
+	if webmode.Enabled() {
+		tenant.SetProxy(config.HttpProxy, config.HttpProxyEnabled)
+		if config.CrawlTimeOut > 0 {
+			tenant.SetHTTPTimeout(time.Duration(config.CrawlTimeOut) * time.Second)
+		} else {
+			tenant.SetHTTPTimeout(300 * time.Second)
+		}
+		return
+	} else if config.HttpProxyEnabled && config.HttpProxy != "" {
 		UpdateHTTPClientProxy(config.HttpProxy)
 	} else {
 		DisableHTTPClientProxy()
@@ -100,16 +197,16 @@ func ConfigureFromSettings(config *SettingConfig) {
 }
 
 func CreateHTTPClientWithTimeout(timeout time.Duration) *resty.Client {
-	httpConfigMutex.RLock()
-	transport := sharedTransport
-	httpConfigMutex.RUnlock()
+	return clientWithTimeout(SharedHTTPClient, timeout)
+}
 
-	httpClient := &http.Client{
-		Transport: transport,
-		Timeout:   timeout,
-	}
+// clientWithTimeout shares the connection pool, never the mutable http.Client.
+// Caller contexts and the transport's tenant timeout still bound each request.
+func clientWithTimeout(client *resty.Client, timeout time.Duration) *resty.Client {
+	httpClient := *client.GetClient()
+	httpClient.Timeout = timeout
 
-	return resty.NewWithClient(httpClient).
+	return resty.NewWithClient(&httpClient).
 		SetTimeout(timeout).
 		SetRetryCount(0)
 }

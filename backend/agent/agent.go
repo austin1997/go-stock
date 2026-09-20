@@ -9,6 +9,8 @@ import (
 	"go-stock/backend/db"
 	"go-stock/backend/logger"
 	"go-stock/backend/models"
+	"go-stock/backend/tenant"
+	"go-stock/backend/webmode"
 	"io"
 	"os"
 	"path/filepath"
@@ -20,6 +22,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/cloudwego/eino/adk"
+	"github.com/cloudwego/eino/adk/filesystem"
 	"github.com/cloudwego/eino/adk/middlewares/dynamictool/toolsearch"
 	"github.com/cloudwego/eino/adk/middlewares/skill"
 	"github.com/cloudwego/eino/adk/middlewares/summarization"
@@ -331,10 +334,15 @@ func createDeepAgent(ctx context.Context, chatModel model.ToolCallingChatModel, 
 	// 文件系统沙箱根：可执行文件所在目录，桌面应用启动时即为 go-stock 根目录
 	rootDir := deepAgentRootDir()
 	fsBackend := tools.NewLocalFilesystemBackend(rootDir)
-	streamingShell := tools.NewLocalStreamingShell(rootDir, 60*time.Second)
-
-	logger.SugaredLogger.Infof("DeepAgents 启用文件系统与 Shell: fs_root=%s, %s",
-		fsBackend.RootDir(), streamingShell.ShellInfo())
+	var streamingShell filesystem.StreamingShell
+	if webmode.Enabled() {
+		logger.SugaredLogger.Infof("DeepAgents 网页版禁用本地 Shell，文件系统沙箱: fs_root=%s", fsBackend.RootDir())
+	} else {
+		localShell := tools.NewLocalStreamingShell(rootDir, 60*time.Second)
+		streamingShell = localShell
+		logger.SugaredLogger.Infof("DeepAgents 启用文件系统与 Shell: fs_root=%s, %s",
+			fsBackend.RootDir(), localShell.ShellInfo())
+	}
 
 	var handlers []adk.TypedChatModelAgentMiddleware[*schema.Message]
 	// 构建 skill 中间件：组合文件系统技能（SKILL.md）与数据库技能（models.Skill）
@@ -577,6 +585,9 @@ func (w *nonFatalSummaryMiddleware) BeforeModelRewriteState(
 // 都会得到一致的沙箱根。若获取可执行文件路径失败，降级到当前工作目录。
 // 可通过环境变量 GO_STOCK_ROOT_DIR 覆盖（用于测试或指定部署目录）。
 func deepAgentRootDir() string {
+	if root := tenant.Root(); root != "" {
+		return root
+	}
 	if env := strings.TrimSpace(os.Getenv("GO_STOCK_ROOT_DIR")); env != "" {
 		return env
 	}

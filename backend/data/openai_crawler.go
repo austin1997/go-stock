@@ -154,7 +154,7 @@ func GetFinancialReports(stockCode string, crawlTimeOut int64) *[]string {
 
 func GetTelegraphList(crawlTimeOut int64) *[]string {
 	clsURL := "https://www.cls.cn/api/cache?app=CailianpressWeb&name=telegraph&os=web&sv=8.7.9"
-	response, err := SharedHTTPClient.SetTimeout(time.Duration(crawlTimeOut)*time.Second).R().
+	response, err := CreateHTTPClientWithTimeout(time.Duration(crawlTimeOut)*time.Second).R().
 		SetHeader("Referer", "https://www.cls.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0").
 		Get(clsURL)
@@ -194,7 +194,7 @@ func GetTelegraphList(crawlTimeOut int64) *[]string {
 
 func GetTopNewsList(crawlTimeOut int64) *[]string {
 	url := "https://www.cls.cn"
-	response, err := SharedHTTPClient.SetTimeout(time.Duration(crawlTimeOut)*time.Second).R().
+	response, err := CreateHTTPClientWithTimeout(time.Duration(crawlTimeOut)*time.Second).R().
 		SetHeader("Referer", "https://www.cls.cn/").
 		SetHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36 Edg/117.0.2045.60").
 		Get(url)

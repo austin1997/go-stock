@@ -1,5 +1,5 @@
-//go:build windows
-// +build windows
+//go:build windows && !goweb
+// +build windows,!goweb
 
 package main
 
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"go-stock/backend/data"
 	"go-stock/backend/db"
+	"go-stock/backend/events"
 	"go-stock/backend/logger"
 	"syscall"
 	"time"
@@ -83,6 +84,7 @@ func (a *App) startup(ctx context.Context) {
 
 	// 设置全局 Wails 上下文，供 AI 工具修改分组/概念后向前端推送刷新事件
 	data.SetAppCtx(ctx)
+	a.initJobContext(ctx)
 
 	a.InitCronTasks()
 
@@ -139,7 +141,7 @@ func MonitorStockPrices(a *App) {
 	//	total += stockData.ProfitAmountToday
 	//	price, _ := convertor.ToFloat(stockData.Price)
 	//	if stockData.PrePrice != price {
-	//		go runtime.EventsEmit(a.ctx, "stock_price", stockData)
+	//		go events.Emit(a.ctx, "stock_price", stockData)
 	//	}
 	//}
 
@@ -160,7 +162,7 @@ func MonitorStockPrices(a *App) {
 
 		if stockInfo.PrePrice != price {
 			//logger.SugaredLogger.Infof("-----------sz------------股票代码: %s, 股票名称: %s, 股票价格: %s,盘前盘后:%s", stockInfo.Code, stockInfo.Name, stockInfo.Price, stockInfo.BA)
-			go runtime.EventsEmit(a.ctx, "stock_price", stockInfo)
+			go events.Emit(a.ctx, "stock_price", stockInfo)
 		}
 
 	}
@@ -172,7 +174,7 @@ func MonitorStockPrices(a *App) {
 	//	}()
 	//}
 
-	go runtime.EventsEmit(a.ctx, "realtime_profit", fmt.Sprintf("  %.2f", total))
+	go events.Emit(a.ctx, "realtime_profit", fmt.Sprintf("  %.2f", total))
 
 	if total != 0 {
 		title := "go-stock " + time.Now().Format(time.DateTime) + fmt.Sprintf("  %.2f¥", total)

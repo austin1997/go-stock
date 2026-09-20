@@ -3,6 +3,8 @@ package tools
 import (
 	"strings"
 	"testing"
+
+	"go-stock/backend/tenant"
 )
 
 // TestCacheTTLForToolPrecise 验证精确配置优先于组级默认。
@@ -77,9 +79,9 @@ func TestBuildCacheKey(t *testing.T) {
 		argsJSON string
 		want     string
 	}{
-		{"空参数", "GetStockInfo", "", "GetStockInfo|"},
-		{"有参数", "GetStockInfo", `{"stockCode":"600519"}`, `GetStockInfo|{"stockCode":"600519"}`},
-		{"参数TrimSpace", "GetStockInfo", `  {"stockCode":"600519"}  `, `GetStockInfo|{"stockCode":"600519"}`},
+		{"空参数", "GetStockInfo", "", "0|GetStockInfo|"},
+		{"有参数", "GetStockInfo", `{"stockCode":"600519"}`, `0|GetStockInfo|{"stockCode":"600519"}`},
+		{"参数TrimSpace", "GetStockInfo", `  {"stockCode":"600519"}  `, `0|GetStockInfo|{"stockCode":"600519"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -170,5 +172,28 @@ func TestSetCachedToolResultSkipTooLarge(t *testing.T) {
 	setCachedToolResult(toolName, argsJSON, largeResult)
 	if _, ok := getCachedToolResult(toolName, argsJSON); ok {
 		t.Error("result > 64KB should not be cached")
+	}
+}
+
+func TestToolResultCacheTenantIsolation(t *testing.T) {
+	resetToolResultCache()
+	toolName := "GetStockOrgBasicInfo"
+	argsJSON := `{"stockCode":"600519"}`
+
+	tenant.Bind(&tenant.Runtime{UserID: 1})
+	setCachedToolResult(toolName, argsJSON, "tenant-1-secret")
+	tenant.Unbind()
+
+	tenant.Bind(&tenant.Runtime{UserID: 2})
+	if _, ok := getCachedToolResult(toolName, argsJSON); ok {
+		t.Fatal("tenant 2 must not read tenant 1 tool cache")
+	}
+	tenant.Unbind()
+
+	tenant.Bind(&tenant.Runtime{UserID: 1})
+	got, ok := getCachedToolResult(toolName, argsJSON)
+	tenant.Unbind()
+	if !ok || got != "tenant-1-secret" {
+		t.Fatalf("tenant 1 cache: ok=%v got=%q", ok, got)
 	}
 }

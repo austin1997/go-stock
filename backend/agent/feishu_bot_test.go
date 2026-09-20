@@ -13,6 +13,8 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 	"github.com/stretchr/testify/assert"
+
+	"go-stock/backend/tenant"
 )
 
 // strPtr 返回字符串指针，便于构造 larkim.EventMessage 的字段
@@ -898,4 +900,16 @@ func TestStripRedactedPlaceholders_CollapsesDoubleSpace(t *testing.T) {
 // TestStripRedactedPlaceholders_EmptyContent 空内容不 panic
 func TestStripRedactedPlaceholders_EmptyContent(t *testing.T) {
 	assert.Equal(t, "", stripRedactedPlaceholders(""))
+}
+
+func TestFeishuBotRunWithTenantBindsRuntime(t *testing.T) {
+	bot := &FeishuBot{rt: &tenant.Runtime{UserID: 9, Root: t.TempDir()}}
+	var got uint
+	bot.runWithTenant(func() { got = tenant.UserID() })
+	if got != 9 {
+		t.Fatalf("bound uid=%d", got)
+	}
+	if tenant.UserID() != 0 {
+		t.Fatal("tenant leaked after runWithTenant")
+	}
 }
